@@ -62,6 +62,7 @@ CHANGE_HISTORY_COL_WIDTHS = [
 
 QRFC_RESEARCH_HEADERS = [
     "VBAP.VBELN",
+    "VBAP.POSNR",
     "QRFC_I_QIN_TOP.QUEUE_NAME",
     "QRFC_I_ERR_STATE.UNIT_ID",
     "QRFC_I_ERR_STATE.MESSAGE",
@@ -69,7 +70,7 @@ QRFC_RESEARCH_HEADERS = [
 ]
 
 QRFC_RESEARCH_COL_WIDTHS = [
-    CONTENT_WIDTH * w for w in (0.14, 0.28, 0.16, 0.24, 0.18)
+    CONTENT_WIDTH * w for w in (0.12, 0.1, 0.22, 0.14, 0.22, 0.2)
 ]
 
 
@@ -86,7 +87,7 @@ def _qrfc_table_rows(d: DiscrepancyRecord) -> List[List[str]]:
     research = d.qrf_research or {}
     queues = research.get("queue_matches") or []
     if not queues:
-        return [[d.vbeln or "—", "—", "—", "—", "—"]]
+        return [[d.vbeln or "—", d.posnr or "—", "—", "—", "—", "—"]]
 
     rows: List[List[str]] = []
     for entry in queues:
@@ -94,6 +95,7 @@ def _qrfc_table_rows(d: DiscrepancyRecord) -> List[List[str]]:
         merged = {**err, **entry}
         rows.append([
             d.vbeln or "—",
+            d.posnr or "—",
             _qrfc_field(merged, "queue_name", "QUEUE_NAME"),
             _qrfc_field(merged, "unit_id", "UNIT_ID"),
             _qrfc_field(merged, "message", "MESSAGE"),
