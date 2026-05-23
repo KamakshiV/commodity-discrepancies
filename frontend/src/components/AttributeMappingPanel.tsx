@@ -83,7 +83,8 @@ export default function AttributeMappingPanel({
           <h2>Attribute Comparison Mapping</h2>
           <p className="muted">
             Map VBAP fields to CMM_VLOGP fields for deterministic mismatch detection.
-            Join keys are fixed and not compared.
+            Defaults auto-map fields with the same name in both tables, then add preset
+            pairs (e.g. KWMENG → QUANTITY). Join keys are fixed and not compared.
           </p>
         </div>
         <div className="mapping-actions">

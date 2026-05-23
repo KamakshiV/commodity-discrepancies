@@ -20,6 +20,25 @@ def _norm(val: Any) -> str:
     return norm(val)
 
 
+VBAP_LINE_PDF_FIELDS = ("MANDT", "PRICING_KEY", "VERSION", "KPOSN", "KSCHL")
+MANDT_COLUMN_ALIASES = ("MANDT", "MANDANT")
+
+
+def _extract_vbap_line_fields(vbap_row: pd.Series) -> dict[str, str]:
+    """Pull VBAP columns required on Category 2 PDF tables."""
+    fields: dict[str, str] = {name: "" for name in VBAP_LINE_PDF_FIELDS}
+    for alias in MANDT_COLUMN_ALIASES:
+        if alias in vbap_row.index:
+            fields["MANDT"] = _norm(vbap_row.get(alias))
+            break
+    for name in VBAP_LINE_PDF_FIELDS:
+        if name == "MANDT":
+            continue
+        if name in vbap_row.index:
+            fields[name] = _norm(vbap_row.get(name))
+    return fields
+
+
 class RuleEngine:
     """Deterministic discrepancy detection — AI must not override these results."""
 
@@ -85,6 +104,7 @@ class RuleEngine:
                         category=DiscrepancyCategory.ATTRIBUTE_MISMATCH,
                         vbap_attributes=vbap_attrs,
                         cmm_attributes=cmm_attrs,
+                        vbap_line_fields=_extract_vbap_line_fields(row),
                         mismatched_fields=mismatched,
                         change_history=self._research_changes(vbeln, posnr),
                     )
@@ -125,19 +145,43 @@ class RuleEngine:
         ]
         for _, qrow in matches.iterrows():
             unit_id = _norm(qrow.get("UNIT_ID"))
-            entry = {
-                "queue_name": _norm(qrow.get("QUEUE_NAME")),
-                "unit_id": unit_id,
-            }
+            queue_name = _norm(qrow.get("QUEUE_NAME"))
             if not err.empty and unit_id:
                 err_rows = err[err["UNIT_ID"].astype(str).str.strip() == unit_id]
+                if err_rows.empty:
+                    result["queue_matches"].append(
+                        {
+                            "queue_name": queue_name,
+                            "unit_id": unit_id,
+                            "message": "",
+                            "message_id": "",
+                        }
+                    )
+                    continue
                 for _, erow in err_rows.iterrows():
-                    entry["error"] = {
-                        "message": _norm(erow.get("MESSAGE")),
-                        "message_id": _norm(erow.get("MESSAGE_ID")),
+                    message = _norm(erow.get("MESSAGE"))
+                    message_id = _norm(erow.get("MESSAGE_ID"))
+                    result["queue_matches"].append(
+                        {
+                            "queue_name": queue_name,
+                            "unit_id": unit_id,
+                            "message": message,
+                            "message_id": message_id,
+                            "error": {"message": message, "message_id": message_id},
+                        }
+                    )
+                    result["errors"].append(
+                        {"message": message, "message_id": message_id}
+                    )
+            else:
+                result["queue_matches"].append(
+                    {
+                        "queue_name": queue_name,
+                        "unit_id": unit_id,
+                        "message": "",
+                        "message_id": "",
                     }
-                    result["errors"].append(entry["error"])
-            result["queue_matches"].append(entry)
+                )
 
         return result
 

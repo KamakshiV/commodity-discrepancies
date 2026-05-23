@@ -17,6 +17,10 @@ class DiscrepancyRecord(BaseModel):
     trmrisk_relevant: str = "C"
     vbap_attributes: Dict[str, Any] = Field(default_factory=dict)
     cmm_attributes: Optional[Dict[str, Any]] = None
+    vbap_line_fields: Dict[str, str] = Field(
+        default_factory=dict,
+        description="VBAP columns for PDF: MANDT, PRICING_KEY, VERSION, KPOSN, KSCHL",
+    )
     mismatched_fields: List[str] = Field(default_factory=list)
     qrf_research: Optional[Dict[str, Any]] = None
     change_history: List[Dict[str, Any]] = Field(default_factory=list)

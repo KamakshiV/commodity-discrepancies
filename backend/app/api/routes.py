@@ -26,6 +26,7 @@ from app.services.data_loader import (
     TABLE_FILES,
     VBAP_JOIN_KEYS,
     all_file_stats,
+    build_default_compare_mappings,
     clear_upload_workspace,
     data_store,
     get_compareable_fields,
@@ -64,7 +65,7 @@ def llm_config():
 def compare_fields():
     """List compareable columns from VBAP and CMM_VLOGP CSVs plus default mappings."""
     data_store.load_all()
-    defaults = [AttributeMapping(**m) for m in DEFAULT_COMPARE_MAPPINGS]
+    defaults = [AttributeMapping(**m) for m in build_default_compare_mappings()]
     return CompareFieldsResponse(
         vbap_fields=get_compareable_fields("VBAP"),
         cmm_fields=get_compareable_fields("CMM_VLOGP"),

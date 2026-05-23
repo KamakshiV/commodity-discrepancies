@@ -46,7 +46,51 @@ def _match_cdhdr_by_vbeln(cdhdr: pd.DataFrame, vbeln: str) -> pd.DataFrame:
 
     object_ids = cdhdr["OBJECTID"].astype(str).str.strip()
     mask = object_ids.apply(lambda oid: canonical_document_key(oid) == target)
-    return cdhdr[mask].copy()
+    exact = cdhdr[mask].copy()
+    if not exact.empty:
+        return exact
+
+    # Fallback: exact string match after strip (non-numeric OBJECTID values)
+    return cdhdr[object_ids == norm(vbeln)].copy()
+
+
+def _cdpos_for_cdhdr_header(
+    cdpos: pd.DataFrame,
+    changenr: str,
+    objectclass: str,
+    oc_pos_col: str,
+    *,
+    include_vbap_fallback: bool = True,
+) -> pd.DataFrame:
+    """
+    Join CDPOS to a CDHDR header row.
+
+    SAP often stores VBELN in CDHDR.OBJECTID but an internal object id in
+    CDPOS.OBJECTID for the same CHANGENR. Join on CHANGENR + OBJECTCLASS only.
+    Prefer TABNAME=VBEP; include VBAP when no VBEP lines exist (common for
+    VBAP attribute changes in customer extracts).
+    """
+    if cdpos.empty:
+        return cdpos.iloc[0:0]
+
+    base = cdpos[
+        (cdpos["CHANGENR"].astype(str).str.strip() == changenr)
+        & (cdpos[oc_pos_col].astype(str).str.strip() == objectclass)
+    ]
+    if base.empty:
+        return base
+
+    tab = base["TABNAME"].astype(str).str.strip().str.upper()
+    vbep = base[tab == VBEP_TABNAME]
+    if not vbep.empty:
+        return vbep
+
+    if include_vbap_fallback:
+        vbap = base[tab == "VBAP"]
+        if not vbap.empty:
+            return vbap
+
+    return base.iloc[0:0]
 
 
 def research_vbep_changes_for_vbeln(
@@ -76,8 +120,6 @@ def research_vbep_changes_for_vbeln(
     if not required_pos.issubset(cdpos.columns):
         return changes
 
-    pos_objectclass = cdpos[oc_pos_col].astype(str).str.strip()
-
     for _, hrow in headers.iterrows():
         changenr = norm(hrow.get("CHANGENR"))
         objectid = norm(hrow.get("OBJECTID"))
@@ -86,18 +128,20 @@ def research_vbep_changes_for_vbeln(
         if not changenr or not objectid or not objectclass:
             continue
 
-        positions = cdpos[
-            (cdpos["CHANGENR"].astype(str).str.strip() == changenr)
-            & (cdpos["OBJECTID"].astype(str).str.strip() == objectid)
-            & (pos_objectclass == objectclass)
-            & (cdpos["TABNAME"].astype(str).str.strip().str.upper() == VBEP_TABNAME)
-        ]
+        positions = _cdpos_for_cdhdr_header(
+            cdpos,
+            changenr,
+            objectclass,
+            oc_pos_col,
+        )
 
         for _, prow in positions.iterrows():
             entry: Dict[str, Any] = {
                 "CHANGENR": changenr,
-                "OBJECTID": objectid,
+                "OBJECTID": norm(prow.get("OBJECTID")) or objectid,
                 "OBJECTCLASS": objectclass,
+                "CDHDR_OBJECTID": objectid,
+                "CDPOS_OBJECTID": norm(prow.get("OBJECTID")),
                 "TABNAME": norm(prow.get("TABNAME")),
                 "FNAME": norm(prow.get("FNAME")),
                 "VALUE_OLD": norm(prow.get("VALUE_OLD")),

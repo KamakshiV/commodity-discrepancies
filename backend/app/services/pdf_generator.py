@@ -38,6 +38,70 @@ def _format_mismatch_line(raw: str) -> str:
     return _escape(raw)
 
 
+def _change_field(ch: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        val = ch.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return "—"
+
+
+CHANGE_HISTORY_HEADERS = [
+    "CHANGENR",
+    "OBJECTID",
+    "OBJECTCLASS",
+    "TABNAME",
+    "FNAME",
+    "VALUE_OLD",
+    "VALUE_NEW",
+]
+
+CHANGE_HISTORY_COL_WIDTHS = [
+    CONTENT_WIDTH * w for w in (0.13, 0.13, 0.14, 0.11, 0.16, 0.16, 0.17)
+]
+
+QRFC_RESEARCH_HEADERS = [
+    "VBAP.VBELN",
+    "QRFC_I_QIN_TOP.QUEUE_NAME",
+    "QRFC_I_ERR_STATE.UNIT_ID",
+    "QRFC_I_ERR_STATE.MESSAGE",
+    "QRFC_I_ERR_STATE.MESSAGE_ID",
+]
+
+QRFC_RESEARCH_COL_WIDTHS = [
+    CONTENT_WIDTH * w for w in (0.14, 0.28, 0.16, 0.24, 0.18)
+]
+
+
+def _qrfc_field(entry: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        val = entry.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return "—"
+
+
+def _qrfc_table_rows(d: DiscrepancyRecord) -> List[List[str]]:
+    """Flatten qRFC research into PDF table rows for Category 1."""
+    research = d.qrf_research or {}
+    queues = research.get("queue_matches") or []
+    if not queues:
+        return [[d.vbeln or "—", "—", "—", "—", "—"]]
+
+    rows: List[List[str]] = []
+    for entry in queues:
+        err = entry.get("error") if isinstance(entry.get("error"), dict) else {}
+        merged = {**err, **entry}
+        rows.append([
+            d.vbeln or "—",
+            _qrfc_field(merged, "queue_name", "QUEUE_NAME"),
+            _qrfc_field(merged, "unit_id", "UNIT_ID"),
+            _qrfc_field(merged, "message", "MESSAGE"),
+            _qrfc_field(merged, "message_id", "MESSAGE_ID"),
+        ])
+    return rows
+
+
 def _format_qrfc_readable(research: Optional[Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
     if not research:
@@ -90,6 +154,16 @@ class PDFGenerator:
         )
         self._body = styles["BodyText"]
         self._small = ParagraphStyle("Small", parent=styles["BodyText"], fontSize=9, leading=12)
+        self._detail_label = ParagraphStyle(
+            "DetailLabel",
+            parent=self._small,
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor("#718096"),
+            fontName="Helvetica-Bold",
+            spaceBefore=8,
+            spaceAfter=4,
+        )
         self._cell = ParagraphStyle(
             "Cell",
             parent=styles["BodyText"],
@@ -196,7 +270,8 @@ class PDFGenerator:
         else:
             story.append(
                 Paragraph(
-                    "These orders exist in both tables but mapped attributes do not match.",
+                    "For each order line: mismatched attributes are listed, then CDHDR/CDPOS "
+                    "change history (VBEP preferred, VBAP when no VBEP rows exist).",
                     self._small,
                 )
             )
@@ -255,26 +330,48 @@ class PDFGenerator:
         self,
         data: List[List[str]],
         col_widths: List[float],
+        *,
+        layout: str = "header_row",
     ) -> Table:
         wrapped: List[List[Any]] = []
-        for row_idx, row in enumerate(data):
-            style = self._cell_header if row_idx == 0 else self._cell
-            wrapped.append([Paragraph(_escape(str(cell)), style) for cell in row])
-        table = Table(wrapped, colWidths=col_widths, repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#edf2f7")),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
-                ]
-            )
-        )
+        if layout == "field_value":
+            for row in data:
+                wrapped.append([
+                    Paragraph(_escape(str(row[0])), self._cell_header),
+                    Paragraph(_escape(str(row[1]) if len(row) > 1 else ""), self._cell),
+                ])
+            repeat_rows = 0
+        else:
+            for row_idx, row in enumerate(data):
+                style = self._cell_header if row_idx == 0 else self._cell
+                wrapped.append([Paragraph(_escape(str(cell)), style) for cell in row])
+            repeat_rows = 1
+
+        table = Table(wrapped, colWidths=col_widths, repeatRows=repeat_rows)
+        if layout == "field_value":
+            style_commands = [
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf2f7")),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+            ]
+        else:
+            style_commands = [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#edf2f7")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+            ]
+        table.setStyle(TableStyle(style_commands))
         return table
 
     def _missing_record_block(self, d: DiscrepancyRecord) -> List[Any]:
@@ -284,13 +381,16 @@ class PDFGenerator:
                 self._subheading,
             ),
             Paragraph(
-                "No CMM_VLOGP record exists for this VBAP line. Commodity logistics data was not created or not synchronized.",
+                "No CMM_VLOGP record exists for this VBAP line. Commodity logistics data "
+                "was not created or not synchronized.",
                 self._small,
             ),
+            Paragraph("QRFC RESEARCH", self._detail_label),
         ]
-        for line in _format_qrfc_readable(d.qrf_research):
-            blocks.append(Paragraph(f"• {line}", self._small))
-        blocks.append(Spacer(1, 0.08 * inch))
+        qrfc_rows: List[List[str]] = [QRFC_RESEARCH_HEADERS]
+        qrfc_rows.extend(_qrfc_table_rows(d))
+        blocks.append(self._para_table(qrfc_rows, QRFC_RESEARCH_COL_WIDTHS))
+        blocks.append(Spacer(1, 0.12 * inch))
         return blocks
 
     def _mismatch_record_block(self, d: DiscrepancyRecord) -> List[Any]:
@@ -300,26 +400,44 @@ class PDFGenerator:
                 self._subheading,
             ),
         ]
-        if d.mismatched_fields:
-            blocks.append(Paragraph("<b>Fields that differ:</b>", self._small))
-            for mf in d.mismatched_fields:
-                blocks.append(Paragraph(f"• {_format_mismatch_line(mf)}", self._small))
+        mismatches = d.mismatched_fields or []
+
+        if mismatches:
+            blocks.append(Paragraph("MISMATCHED ATTRIBUTES", self._detail_label))
+            for mf in mismatches:
+                blocks.append(Paragraph(f"• {_escape(mf)}", self._small))
+
         if d.change_history:
-            blocks.append(Paragraph("<b>Related change documents (VBEP):</b>", self._small))
-            ch_rows = [
-                ["Change #", "Field", "Previous", "New"],
-            ]
+            blocks.append(
+                Paragraph(
+                    "CHANGE HISTORY (CDHDR → CDPOS, TABNAME=VBEP)",
+                    self._detail_label,
+                )
+            )
+            ch_rows: List[List[str]] = [CHANGE_HISTORY_HEADERS]
             for ch in d.change_history:
                 ch_rows.append([
-                    str(ch.get("CHANGENR") or ch.get("changenr", "")),
-                    str(ch.get("FNAME") or ch.get("fname", "")),
-                    str(ch.get("VALUE_OLD") or ch.get("value_old", "")),
-                    str(ch.get("VALUE_NEW") or ch.get("value_new", "")),
+                    _change_field(ch, "CHANGENR", "changenr"),
+                    _change_field(ch, "CDPOS_OBJECTID", "OBJECTID", "objectid"),
+                    _change_field(ch, "OBJECTCLASS", "objectclass"),
+                    _change_field(ch, "TABNAME", "tabname"),
+                    _change_field(ch, "FNAME", "fname"),
+                    _change_field(ch, "VALUE_OLD", "value_old"),
+                    _change_field(ch, "VALUE_NEW", "value_new"),
                 ])
+            blocks.append(self._para_table(ch_rows, CHANGE_HISTORY_COL_WIDTHS))
+        elif mismatches:
             blocks.append(
-                self._para_table(ch_rows, [1.1 * inch, 1.2 * inch, 1.85 * inch, 1.85 * inch])
+                Paragraph(
+                    "No CDPOS change history found for this order line.",
+                    self._small,
+                )
             )
-        if not d.mismatched_fields and not d.change_history:
-            blocks.append(Paragraph("Attribute differences were detected by the rule engine.", self._small))
-        blocks.append(Spacer(1, 0.08 * inch))
+
+        if not mismatches and not d.change_history:
+            blocks.append(
+                Paragraph("Attribute differences were detected by the rule engine.", self._small)
+            )
+
+        blocks.append(Spacer(1, 0.12 * inch))
         return blocks

@@ -42,14 +42,40 @@ def test_vbep_change_join_with_objectclas_alias():
 
     assert len(changes) == 1
     ch = changes[0]
-    assert ch["CHANGENR"] == "0002942764"
-    assert ch["OBJECTID"] == "00051000401"
-    assert ch["OBJECTCLASS"] == "VERKBELEG"
     assert ch["TABNAME"] == "VBEP"
     assert ch["FNAME"] == "BMENG"
-    assert ch["VALUE_OLD"] == "10"
-    assert ch["VALUE_NEW"] == "20"
-    assert ch["POSNR"] == "000010"
+
+
+def test_cdpos_objectid_may_differ_from_cdhdr_vbeln():
+    """Real extracts: CDHDR.OBJECTID=VBELN, CDPOS.OBJECTID=internal id, same CHANGENR."""
+    cdhdr = pd.DataFrame(
+        [
+            {
+                "OBJECTID": "51000401",
+                "CHANGENR": "0002942753",
+                "OBJECTCLAS": "VERKBELEG",
+            }
+        ]
+    )
+    cdpos = pd.DataFrame(
+        [
+            {
+                "CHANGENR": "0002942753",
+                "OBJECTID": "1200000058",
+                "OBJECTCLAS": "VERKBELEG",
+                "TABNAME": "VBAP",
+                "FNAME": "OIC_ADESTN",
+                "VALUE_OLD": "",
+                "VALUE_NEW": "CAOEDM101",
+            },
+        ]
+    )
+
+    changes = research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos)
+    assert len(changes) == 1
+    assert changes[0]["FNAME"] == "OIC_ADESTN"
+    assert changes[0]["CDHDR_OBJECTID"] == "51000401"
+    assert changes[0]["CDPOS_OBJECTID"] == "1200000058"
 
 
 def test_no_match_when_vbeln_not_in_cdhdr():

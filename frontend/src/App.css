@@ -160,7 +160,7 @@ body {
   margin: 0;
   padding: 0;
   width: 100%;
-  filter: drop-shadow(0 3px 10px rgba(107, 76, 199, 0.22));
+  filter: drop-shadow(0 3px 10px rgba(22, 163, 74, 0.22));
 }
 
 .chevron-step {
@@ -187,7 +187,7 @@ body {
   font-size: 0.85rem;
   font-weight: 600;
   color: #ffffff;
-  background: #c4a8f5;
+  background: #86efac;
   cursor: pointer;
   clip-path: polygon(
     0 0,
@@ -227,26 +227,26 @@ body {
 }
 
 .chevron-step.done .chevron-step-btn {
-  background: #b388f8;
+  background: #4ade80;
 }
 
 .chevron-step.active .chevron-step-btn {
-  background: #7c3aed;
+  background: #16a34a;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
 }
 
 .chevron-step.upcoming .chevron-step-btn {
-  background: #ddd6fe;
-  color: #5b21b6;
+  background: #dcfce7;
+  color: #166534;
 }
 
 .chevron-step.upcoming .chevron-dot {
-  background: #7c3aed;
+  background: #16a34a;
 }
 
 .chevron-step.upcoming .chevron-icon.pending {
-  background: rgba(124, 58, 237, 0.15);
-  border-color: rgba(124, 58, 237, 0.45);
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.45);
 }
 
 .chevron-icon {
@@ -260,7 +260,7 @@ body {
 }
 
 .chevron-icon.complete {
-  background: #14b8a6;
+  background: #15803d;
   color: #ffffff;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45);
 }

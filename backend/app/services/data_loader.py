@@ -49,10 +49,52 @@ def count_commodity_relevant(vbap: pd.DataFrame) -> int:
 def get_compareable_fields(table: str) -> List[str]:
     """Return CSV columns available for user-selected comparison (excludes join keys)."""
     df = data_store.get(table)
-    if df.empty:
+    if len(df.columns) == 0:
         return []
     exclude = VBAP_JOIN_KEYS if table == "VBAP" else CMM_JOIN_KEYS
     return sorted(col for col in df.columns if col not in exclude)
+
+
+def build_default_compare_mappings() -> List[dict]:
+    """
+    Build default VBAP ↔ CMM_VLOGP mappings for the UI.
+
+    1. Pair fields that share the same column name in both tables (e.g. MATNR → MATNR).
+    2. Append preset mappings (MATNR → MATERIAL, etc.) when not already covered.
+    """
+    vbap_fields = set(get_compareable_fields("VBAP"))
+    cmm_fields = set(get_compareable_fields("CMM_VLOGP"))
+    common_names = sorted(vbap_fields & cmm_fields)
+
+    mappings: List[dict] = []
+    seen_vbap: set[str] = set()
+
+    for name in common_names:
+        mappings.append({"vbap_field": name, "cmm_field": name, "enabled": True})
+        seen_vbap.add(name)
+
+    for preset in DEFAULT_COMPARE_MAPPINGS:
+        vbap_f = preset["vbap_field"]
+        cmm_f = preset["cmm_field"]
+        if vbap_f in seen_vbap:
+            continue
+        if vbap_fields and vbap_f not in vbap_fields:
+            continue
+        if cmm_fields and cmm_f not in cmm_fields:
+            continue
+        mappings.append(
+            {
+                "vbap_field": vbap_f,
+                "cmm_field": cmm_f,
+                "enabled": preset.get("enabled", True),
+            }
+        )
+        seen_vbap.add(vbap_f)
+
+    if not mappings:
+        return [dict(m) for m in DEFAULT_COMPARE_MAPPINGS]
+
+    return mappings
 
 
 def mappings_to_tuples(mappings: List[dict]) -> List[tuple]:
