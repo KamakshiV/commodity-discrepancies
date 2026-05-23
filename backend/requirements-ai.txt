@@ -1,0 +1,3 @@
+# Optional: OpenAI agents (Python 3.9+). No CrewAI — uses OpenAI SDK directly.
+-r requirements.txt
+openai>=1.54.0

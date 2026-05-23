@@ -1,0 +1,6 @@
+# Optional AI stack for Python 3.10+
+-r requirements.txt
+crewai>=0.86.0
+crewai-tools>=0.17.0
+langchain-openai>=0.2.0
+openai>=1.54.0
