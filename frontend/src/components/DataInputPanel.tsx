@@ -72,8 +72,8 @@ interface Props {
 }
 
 function sourceLabel(source: string): string {
-  if (source === "google_drive") return "Google Drive";
-  if (source === "local") return "Local cache";
+  if (source === "google_drive") return "Drive";
+  if (source === "local") return "Local folder";
   return source;
 }
 
@@ -167,8 +167,8 @@ export default function DataInputPanel({
     onVbelnsChange(vbelns.filter((v) => v !== value));
   };
 
-  const usesGoogleDrive = dataSource === "google_drive";
-  const reloadLabel = usesGoogleDrive ? "Sync from Google Drive" : "Reload from folder";
+  const usesDriveSync = dataSource === "google_drive";
+  const reloadLabel = usesDriveSync ? "Sync from Drive" : "Reload from folder";
 
   return (
     <section className="step-panel upload-panel">
@@ -177,8 +177,8 @@ export default function DataInputPanel({
           <span className="step-badge">Step 1</span>
           <h2>Select data source</h2>
           <p>
-            {usesGoogleDrive
-              ? "SAP CSV exports are synced from Google Drive into a server cache. Choose how to scope the analysis."
+            {usesDriveSync
+              ? "SAP CSV exports are synced from a shared drive. Choose how to scope the analysis."
               : "SAP CSV exports are read from a folder on the server. Choose how to scope the analysis."}
           </p>
         </div>
@@ -195,15 +195,15 @@ export default function DataInputPanel({
       <div className="shared-drive-banner">
         <div className="shared-drive-info">
           <span className="shared-drive-label">
-            {usesGoogleDrive ? "Google Drive" : "Local folder"}
+            {usesDriveSync ? "Drive" : "Local folder"}
           </span>
-          {usesGoogleDrive && googleDriveFolderId ? (
+          {usesDriveSync && googleDriveFolderId ? (
             <code className="shared-drive-path">Folder ID: {googleDriveFolderId}</code>
           ) : (
             <code className="shared-drive-path">{sharedDataDir || "Not configured"}</code>
           )}
-          {usesGoogleDrive && !googleDriveConfigured && (
-            <span className="shared-drive-warn muted">Google Drive credentials missing</span>
+          {usesDriveSync && !googleDriveConfigured && (
+            <span className="shared-drive-warn muted">Drive sync not configured</span>
           )}
         </div>
         <button
@@ -232,8 +232,8 @@ export default function DataInputPanel({
             </span>
           ))}
           .{" "}
-          {usesGoogleDrive
-            ? "Add CSV or Excel files to the Google Drive folder, then click Sync from Google Drive."
+          {usesDriveSync
+            ? "Add CSV or Excel files to the shared drive folder, then click Sync from Drive."
             : "Place all six SAP exports (CSV or Excel) in the folder, then click Reload."}
         </div>
       )}
