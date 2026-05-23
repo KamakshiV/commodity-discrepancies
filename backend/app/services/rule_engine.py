@@ -1,8 +1,12 @@
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from app.models.schemas import DiscrepancyCategory, DiscrepancyRecord
+from app.services.change_document_research import (
+    ChangeResearchIndex,
+    research_vbep_changes_for_vbeln,
+)
 from app.services.data_loader import (
     COMMODITY_FILTER_COLUMN,
     DEFAULT_COMPARE_MAPPINGS,
@@ -10,8 +14,12 @@ from app.services.data_loader import (
     filter_vbap_scope,
     mappings_to_tuples,
 )
-from app.services.change_document_research import research_vbep_changes_for_vbeln
-from app.services.field_compare import canonical_document_key, norm, sap_keys_match, values_equal
+from app.services.field_compare import (
+    canonical_document_key,
+    canonical_item_key,
+    norm,
+    values_equal,
+)
 
 
 def _norm(val: Any) -> str:
@@ -36,6 +44,25 @@ def _extract_vbap_line_fields(vbap_row: pd.Series) -> dict[str, str]:
         if name in vbap_row.index:
             fields[name] = _norm(vbap_row.get(name))
     return fields
+
+
+def _build_cmm_index(cmm: pd.DataFrame) -> Dict[Tuple[str, str], pd.Series]:
+    """Map (document_key, item_key) → first matching CMM_VLOGP row."""
+    index: Dict[Tuple[str, str], pd.Series] = {}
+    if cmm.empty:
+        return index
+    doc_col = "DOCUMENT_CHAR10"
+    item_col = "DOCUMENT_ITEM"
+    if doc_col not in cmm.columns or item_col not in cmm.columns:
+        return index
+    for _, row in cmm.iterrows():
+        key = (
+            canonical_document_key(row.get(doc_col)),
+            canonical_item_key(row.get(item_col)),
+        )
+        if key[0] and key not in index:
+            index[key] = row
+    return index
 
 
 class RuleEngine:
@@ -81,6 +108,19 @@ class RuleEngine:
         results: list[DiscrepancyRecord] = []
         join_exclude = {"VBELN", "POSNR", COMMODITY_FILTER_COLUMN}
 
+        cmm_index = _build_cmm_index(cmm)
+        change_index = ChangeResearchIndex.build(
+            self.store.get("CDHDR"),
+            self.store.get("CDPOS"),
+        )
+        qrfc_cache: Dict[str, dict[str, Any]] = {}
+        change_cache: Dict[str, list[dict[str, Any]]] = {}
+
+        qin = self.store.get("QRFC_I_QIN_TOP")
+        err = self.store.get("QRFC_I_ERR_STATE")
+        cdhdr = self.store.get("CDHDR")
+        cdpos = self.store.get("CDPOS")
+
         for _, row in commodity.iterrows():
             vbeln = _norm(row.get("VBELN"))
             posnr = _norm(row.get("POSNR"))
@@ -90,32 +130,24 @@ class RuleEngine:
                 if col not in join_exclude
             }
 
-            cmm_matches = pd.DataFrame()
-            if not cmm.empty:
-                match_mask = cmm.apply(
-                    lambda r: sap_keys_match(
-                        vbeln,
-                        r.get("DOCUMENT_CHAR10"),
-                        posnr,
-                        r.get("DOCUMENT_ITEM"),
-                    ),
-                    axis=1,
-                )
-                cmm_matches = cmm[match_mask]
+            cmm_row = cmm_index.get(
+                (canonical_document_key(vbeln), canonical_item_key(posnr))
+            )
 
-            if cmm_matches.empty:
+            if cmm_row is None:
                 results.append(
                     DiscrepancyRecord(
                         vbeln=vbeln,
                         posnr=posnr,
                         category=DiscrepancyCategory.MISSING_IN_CMM_VLOGP,
                         vbap_attributes=vbap_attrs,
-                        qrf_research=self._research_qrfc(vbeln),
+                        qrf_research=self._research_qrfc_cached(
+                            vbeln, qin, err, qrfc_cache
+                        ),
                     )
                 )
                 continue
 
-            cmm_row = cmm_matches.iloc[0]
             cmm_attrs = {col: _norm(cmm_row.get(col)) for col in cmm_row.index}
             mismatched = self._compare_attributes(row, cmm_row)
 
@@ -129,7 +161,14 @@ class RuleEngine:
                         cmm_attributes=cmm_attrs,
                         vbap_line_fields=_extract_vbap_line_fields(row),
                         mismatched_fields=mismatched,
-                        change_history=self._research_changes(vbeln, posnr),
+                        change_history=self._research_changes_cached(
+                            vbeln,
+                            posnr,
+                            cdhdr,
+                            cdpos,
+                            change_index,
+                            change_cache,
+                        ),
                     )
                 )
 
@@ -152,9 +191,23 @@ class RuleEngine:
                 mismatched.append(f"{vbap_field}/{cmm_field}: {vbap_val} != {cmm_val}")
         return mismatched
 
-    def _research_qrfc(self, vbeln: str) -> dict[str, Any]:
-        qin = self.store.get("QRFC_I_QIN_TOP")
-        err = self.store.get("QRFC_I_ERR_STATE")
+    def _research_qrfc_cached(
+        self,
+        vbeln: str,
+        qin: pd.DataFrame,
+        err: pd.DataFrame,
+        cache: Dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        key = canonical_document_key(vbeln)
+        if key in cache:
+            return cache[key]
+        result = self._research_qrfc(vbeln, qin, err)
+        cache[key] = result
+        return result
+
+    def _research_qrfc(
+        self, vbeln: str, qin: pd.DataFrame, err: pd.DataFrame
+    ) -> dict[str, Any]:
         result: dict[str, Any] = {"queue_matches": [], "errors": []}
 
         if qin.empty:
@@ -163,14 +216,23 @@ class RuleEngine:
         pattern = canonical_document_key(vbeln).lower()
         if not pattern:
             return result
+
         matches = qin[
             qin["QUEUE_NAME"].astype(str).str.lower().str.contains(pattern, na=False)
         ]
+
+        err_by_unit: Dict[str, pd.DataFrame] = {}
+        if not err.empty and "UNIT_ID" in err.columns:
+            unit_ids = err["UNIT_ID"].astype(str).str.strip()
+            for unit_id, group in err.groupby(unit_ids, sort=False):
+                if unit_id:
+                    err_by_unit[unit_id] = group
+
         for _, qrow in matches.iterrows():
             unit_id = _norm(qrow.get("UNIT_ID"))
             queue_name = _norm(qrow.get("QUEUE_NAME"))
-            if not err.empty and unit_id:
-                err_rows = err[err["UNIT_ID"].astype(str).str.strip() == unit_id]
+            if err_by_unit and unit_id:
+                err_rows = err_by_unit.get(unit_id, pd.DataFrame())
                 if err_rows.empty:
                     result["queue_matches"].append(
                         {
@@ -208,14 +270,27 @@ class RuleEngine:
 
         return result
 
-    def _research_changes(self, vbeln: str, posnr: str) -> list[dict[str, Any]]:
-        """Scenario 2: CDHDR (by VBELN→OBJECTID) → CDPOS join."""
-        return research_vbep_changes_for_vbeln(
-            vbeln,
-            self.store.get("CDHDR"),
-            self.store.get("CDPOS"),
-            posnr=posnr,
-        )
+    def _research_changes_cached(
+        self,
+        vbeln: str,
+        posnr: str,
+        cdhdr: pd.DataFrame,
+        cdpos: pd.DataFrame,
+        index: ChangeResearchIndex,
+        cache: Dict[str, list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        key = canonical_document_key(vbeln)
+        if key not in cache:
+            cache[key] = research_vbep_changes_for_vbeln(
+                vbeln,
+                cdhdr,
+                cdpos,
+                index=index,
+            )
+        base = cache[key]
+        if not posnr:
+            return list(base)
+        return [{**entry, "POSNR": norm(posnr)} for entry in base]
 
     def count_commodity_relevant(self) -> int:
         return len(self._scoped_commodity())

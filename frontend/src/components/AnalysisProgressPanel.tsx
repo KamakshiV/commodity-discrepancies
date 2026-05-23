@@ -19,8 +19,7 @@ export default function AnalysisProgressPanel({ phase, inline = false }: Props) 
           <span className="step-badge">Step 4</span>
           <h2>Analysis in progress</h2>
           <p>
-            Reconciling records, researching qRFC and change documents, and generating
-            AI explanations. This may take a minute.
+            Reconciling records, researching qRFC and change documents, and generating AI explanations. This may take a minute.
           </p>
         </div>
 

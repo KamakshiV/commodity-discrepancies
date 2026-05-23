@@ -125,6 +125,27 @@ body {
   color: #6b21a8;
 }
 
+.chip-time {
+  background: #ccfbf1;
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.analysis-time-banner {
+  margin: 0 0 1rem;
+  padding: 0.65rem 1rem;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ecfdf5 0%, #f0fdfa 100%);
+  border: 1px solid #99f6e4;
+  color: #134e4a;
+  font-size: 0.95rem;
+}
+
+.analysis-time-banner strong {
+  font-weight: 700;
+  color: #0d9488;
+}
+
 .app {
   flex: 1;
   max-width: 1280px;
@@ -419,11 +440,20 @@ body {
   font-size: 1.35rem;
 }
 
-.step-panel-header p {
+.results-step-header p.analysis-duration {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0d9488;
+  white-space: nowrap;
+}
+
+.step-panel-header p,
+.results-step-header p:not(.analysis-duration) {
   margin: 0;
   color: var(--muted);
-  line-height: 1.55;
-  max-width: 40rem;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 .step-panel-actions {
@@ -1120,11 +1150,6 @@ body {
   background: var(--bg-ivory);
   padding: 0.2rem 0.45rem;
   border-radius: 4px;
-}
-
-.shared-drive-cache {
-  font-size: 0.78rem;
-  margin-top: 0.2rem;
 }
 
 .shared-drive-warn {
@@ -2736,6 +2761,12 @@ body {
   }
 
   .hero-subtitle {
+    white-space: normal;
+    font-size: 0.88rem;
+  }
+
+  .step-panel-header p,
+  .results-step-header p {
     white-space: normal;
     font-size: 0.88rem;
   }

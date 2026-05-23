@@ -1,4 +1,6 @@
+import csv
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -515,36 +517,148 @@ def resolve_csv_path(filename: str) -> Tuple[Path, str]:
     return canonical_path, "missing"
 
 
-def stats_for_file(table: str, filename: str) -> dict:
-    path, source = resolve_csv_path(filename)
-    loaded = path.exists()
-    row_count = 0
-    column_count = 0
-    columns: List[str] = []
-    file_size_bytes: Optional[int] = None
-
-    if loaded:
-        file_size_bytes = path.stat().st_size
-        df = read_tabular_file(path)
-        row_count = len(df)
-        columns = list(df.columns)
-        column_count = len(columns)
-
+def _stats_dict(
+    *,
+    table: str,
+    filename: str,
+    loaded: bool,
+    row_count: int,
+    columns: List[str],
+    file_size_bytes: Optional[int],
+    source: str,
+    resolved_filename: Optional[str],
+) -> dict:
     return {
         "filename": filename,
         "table": table,
         "loaded": loaded,
         "row_count": row_count,
-        "column_count": column_count,
+        "column_count": len(columns),
         "columns": columns,
         "file_size_bytes": file_size_bytes,
-        "source": source if loaded else "missing",
-        "resolved_filename": path.name if loaded else None,
+        "source": source,
+        "resolved_filename": resolved_filename,
     }
+
+
+def stats_from_dataframe(
+    df: pd.DataFrame,
+    table: str,
+    filename: str,
+    path: Path,
+    source: str,
+) -> dict:
+    file_size_bytes = path.stat().st_size if path.exists() else None
+    columns = [str(c) for c in df.columns]
+    return _stats_dict(
+        table=table,
+        filename=filename,
+        loaded=True,
+        row_count=len(df),
+        columns=columns,
+        file_size_bytes=file_size_bytes,
+        source=source,
+        resolved_filename=path.name,
+    )
+
+
+def quick_stats_from_path(path: Path, table: str, filename: str, source: str) -> dict:
+    """Row/column counts without loading the full table into pandas."""
+    file_size_bytes = path.stat().st_size
+    ext = path.suffix.lower()
+
+    if ext == ".csv":
+        with path.open(encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.reader(handle)
+            columns = [str(c) for c in next(reader, [])]
+            row_count = sum(1 for _ in reader)
+        return _stats_dict(
+            table=table,
+            filename=filename,
+            loaded=True,
+            row_count=row_count,
+            columns=columns,
+            file_size_bytes=file_size_bytes,
+            source=source,
+            resolved_filename=path.name,
+        )
+
+    if ext in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            row_iter = ws.iter_rows(min_row=1, max_row=1, values_only=True)
+            columns = [str(c) if c is not None else "" for c in next(row_iter, ())]
+            max_row = ws.max_row or 0
+            row_count = max(0, max_row - 1) if columns else 0
+        finally:
+            wb.close()
+        return _stats_dict(
+            table=table,
+            filename=filename,
+            loaded=True,
+            row_count=row_count,
+            columns=columns,
+            file_size_bytes=file_size_bytes,
+            source=source,
+            resolved_filename=path.name,
+        )
+
+    # Legacy .xls — fall back to pandas (rare in this project)
+    header = pd.read_excel(path, dtype=str, engine="xlrd", nrows=0)
+    columns = [str(c) for c in header.columns]
+    full = pd.read_excel(path, dtype=str, engine="xlrd", usecols=[0])
+    return _stats_dict(
+        table=table,
+        filename=filename,
+        loaded=True,
+        row_count=len(full),
+        columns=columns,
+        file_size_bytes=file_size_bytes,
+        source=source,
+        resolved_filename=path.name,
+    )
+
+
+def stats_for_file(table: str, filename: str) -> dict:
+    path, source = resolve_csv_path(filename)
+    if not path.exists():
+        return _stats_dict(
+            table=table,
+            filename=filename,
+            loaded=False,
+            row_count=0,
+            columns=[],
+            file_size_bytes=None,
+            source="missing",
+            resolved_filename=None,
+        )
+
+    if not data_store._require_reload:
+        cached = data_store._tables.get(table)
+        if cached is not None and not cached.empty:
+            return stats_from_dataframe(cached, table, filename, path, source)
+
+    return quick_stats_from_path(path, table, filename, source)
 
 
 def all_file_stats() -> List[dict]:
     return [stats_for_file(table, filename) for table, filename in TABLE_FILES.items()]
+
+
+def all_file_stats_from_store() -> List[dict]:
+    """Stats from in-memory tables after load_all (no second disk read)."""
+    stats: List[dict] = []
+    for table, filename in TABLE_FILES.items():
+        path, source = resolve_csv_path(filename)
+        df = data_store._tables.get(table)
+        if df is not None and not df.empty and path.exists():
+            stats.append(stats_from_dataframe(df, table, filename, path, source))
+        else:
+            stats.append(stats_for_file(table, filename))
+    return stats
 
 
 def clear_data_cache() -> dict:
@@ -587,17 +701,44 @@ class DataStore:
         self._tables: Dict[str, pd.DataFrame] = {}
         self._require_reload: bool = False
 
-    def load_all(self) -> Dict[str, pd.DataFrame]:
+    def has_tables_in_memory(self) -> bool:
+        return (
+            not self._require_reload
+            and len(self._tables) >= len(TABLE_FILES)
+            and all(t in self._tables for t in TABLE_FILES)
+        )
+
+    def _load_table(self, table: str, filename: str) -> Tuple[str, pd.DataFrame]:
+        path, _ = resolve_csv_path(filename)
+        if path.exists():
+            return table, read_tabular_file(path)
+        return table, pd.DataFrame()
+
+    def load_all(self, *, force: bool = False) -> Dict[str, pd.DataFrame]:
         if self._require_reload:
             return self._tables
+        if not force and self.has_tables_in_memory():
+            return self._tables
+
         settings.shared_data_dir.mkdir(parents=True, exist_ok=True)
         invalidate_local_csv_index()
-        for table, filename in TABLE_FILES.items():
-            path, _ = resolve_csv_path(filename)
-            if path.exists():
-                self._tables[table] = read_tabular_file(path)
-            else:
-                self._tables[table] = pd.DataFrame()
+
+        items = list(TABLE_FILES.items())
+        if len(items) <= 1:
+            for table, filename in items:
+                t, df = self._load_table(table, filename)
+                self._tables[t] = df
+        else:
+            with ThreadPoolExecutor(max_workers=min(6, len(items))) as pool:
+                loaded = list(
+                    pool.map(
+                        lambda pair: self._load_table(pair[0], pair[1]),
+                        items,
+                    )
+                )
+            for table, df in loaded:
+                self._tables[table] = df
+
         return self._tables
 
     def get(self, table: str) -> pd.DataFrame:
@@ -615,7 +756,7 @@ class DataStore:
             self.data_dir = data_dir
         self._require_reload = False
         self._tables.clear()
-        self.load_all()
+        self.load_all(force=True)
 
 
 data_store = DataStore()

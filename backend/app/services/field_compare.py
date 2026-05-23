@@ -1,10 +1,65 @@
 """SAP field normalization for cross-table key and attribute comparison."""
 
+import math
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+_SCI_NOTATION_RE = re.compile(
+    r"^[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+$"
+)
 
 
 def norm(val: Any) -> str:
     return str(val).strip() if val is not None else ""
+
+
+def format_display_value(val: Any) -> str:
+    """
+    Format a SAP field value for human-readable output (PDF, UI).
+
+    Converts scientific notation and float artifacts to plain decimals;
+    leaves non-numeric codes (e.g. LGORT) unchanged.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, float):
+        if math.isnan(val):
+            return ""
+        if math.isinf(val):
+            return str(val)
+        return _decimal_to_plain(Decimal(repr(val)))
+
+    s = norm(val)
+    if not s or s.lower() in ("nan", "none", "<na>"):
+        return ""
+
+    if _SCI_NOTATION_RE.match(s):
+        try:
+            return _decimal_to_plain(Decimal(s))
+        except InvalidOperation:
+            return s
+
+    unsigned = s.lstrip("-")
+    if _is_numeric_string(unsigned):
+        try:
+            return _decimal_to_plain(Decimal(s))
+        except InvalidOperation:
+            return s
+
+    return s
+
+
+def _decimal_to_plain(d: Decimal) -> str:
+    if d.is_nan():
+        return ""
+    normalized = d.normalize()
+    if normalized == normalized.to_integral_value():
+        return str(int(normalized))
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _is_numeric_string(s: str) -> bool:

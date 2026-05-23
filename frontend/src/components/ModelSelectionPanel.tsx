@@ -29,8 +29,7 @@ export default function ModelSelectionPanel({
         <span className="step-badge">Step 3</span>
         <h2>Select OpenAI model</h2>
         <p>
-          Choose the LLM used by investigation agents for root-cause analysis and
-          narrative generation in the PDF report.
+          Choose the LLM used by investigation agents for root-cause analysis and narrative generation in the PDF report.
         </p>
       </div>
 

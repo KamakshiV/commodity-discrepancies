@@ -1,18 +1,21 @@
 import { useMemo, useState } from "react";
 import type { AgentInsight, AnalysisResult, DiscrepancyRecord } from "../types";
+import { formatAnalysisDuration } from "../utils/formatDuration";
 
 type ResultsTab = "overview" | "discrepancies" | "insights" | "actions";
 type CategoryFilter = "all" | "missing" | "mismatch";
 
 interface Props {
   result: AnalysisResult;
+  analysisDurationMs?: number | null;
 }
 
 function isMissing(d: DiscrepancyRecord) {
   return d.category.includes("Missing");
 }
 
-export default function ResultsDashboard({ result }: Props) {
+export default function ResultsDashboard({ result, analysisDurationMs }: Props) {
+  const durationMs = result.duration_ms ?? analysisDurationMs ?? null;
   const [tab, setTab] = useState<ResultsTab>("overview");
   const [filter, setFilter] = useState<CategoryFilter>("all");
   const [search, setSearch] = useState("");
@@ -49,6 +52,11 @@ export default function ResultsDashboard({ result }: Props) {
 
   return (
     <section className="results-dashboard animate-in">
+      {durationMs != null && (
+        <p className="analysis-time-banner" role="status">
+          Analysis completed in <strong>{formatAnalysisDuration(durationMs)}</strong>
+        </p>
+      )}
       <div className="metrics-interactive">
         {[
           {
@@ -125,6 +133,11 @@ export default function ResultsDashboard({ result }: Props) {
             {result.ai_total_tokens != null && result.ai_total_tokens > 0 && (
               <span className="chip chip-tokens">
                 {result.ai_total_tokens.toLocaleString()} AI tokens
+              </span>
+            )}
+            {durationMs != null && (
+              <span className="chip chip-time">
+                {formatAnalysisDuration(durationMs)}
               </span>
             )}
             {summary.executive_summary && (

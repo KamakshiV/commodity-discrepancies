@@ -23,6 +23,7 @@ from app.services.data_loader import (
     TABLE_FILES,
     VBAP_JOIN_KEYS,
     all_file_stats,
+    all_file_stats_from_store,
     build_default_compare_mappings,
     clear_data_cache,
     data_store,
@@ -38,7 +39,7 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 def health():
-    if not data_store._require_reload:
+    if not data_store._require_reload and not data_store.has_tables_in_memory():
         data_store.load_all()
     return HealthResponse(
         status="ok",
@@ -67,7 +68,7 @@ def llm_config():
 @router.get("/data/compare-fields", response_model=CompareFieldsResponse)
 def compare_fields():
     """List compareable columns from VBAP and CMM_VLOGP CSVs plus default mappings."""
-    if not data_store._require_reload:
+    if not data_store._require_reload and not data_store.has_tables_in_memory():
         data_store.load_all()
     defaults = [AttributeMapping(**m) for m in build_default_compare_mappings()]
     return CompareFieldsResponse(
@@ -111,7 +112,7 @@ def reload_shared_data():
         sync_info = sync_data_source()
         data_store._require_reload = False
         data_store._tables.clear()
-        data_store.load_all()
+        data_store.load_all(force=True)
         tables = data_store.loaded_tables()
         log_success(
             "api",
@@ -123,9 +124,10 @@ def reload_shared_data():
             "data_source": settings.data_source,
             "shared_data_dir": str(settings.shared_data_dir),
             "google_drive_folder_id": settings.google_drive_folder_id or None,
+            "google_drive_configured": is_google_drive_configured(),
             "sync": sync_info,
             "tables_loaded": tables,
-            "file_stats": [stats_for_file(t, fn) for t, fn in TABLE_FILES.items()],
+            "file_stats": [FileUploadStats(**s) for s in all_file_stats_from_store()],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

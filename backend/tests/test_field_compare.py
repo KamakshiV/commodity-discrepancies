@@ -3,6 +3,7 @@
 from app.services.field_compare import (
     canonical_document_key,
     canonical_item_key,
+    format_display_value,
     sap_keys_match,
     values_equal,
 )
@@ -31,3 +32,15 @@ def test_values_equal_numeric():
     assert values_equal("100.5", "100.50")
     assert values_equal("1.0", "1")
     assert not values_equal("10", "100")
+
+
+def test_format_display_value_scientific_notation():
+    assert format_display_value("1.9437000000000000E+00") == "1.9437"
+    assert format_display_value("1.216550000000000E-01") == "0.121655"
+
+
+def test_format_display_value_plain_and_codes():
+    assert format_display_value("1.94") == "1.94"
+    assert format_display_value("INTR") == "INTR"
+    assert format_display_value("FINV") == "FINV"
+    assert format_display_value(1.9437) == "1.9437"

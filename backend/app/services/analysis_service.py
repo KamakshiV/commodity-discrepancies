@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -48,6 +49,7 @@ class AnalysisService:
         global _last_result, _pdf_cache, _last_compare_mappings, _last_llm_model
 
         begin_analysis_logs()
+        analysis_started = time.perf_counter()
         _last_llm_model = _resolve_model(llm_model)
 
         scope_label = build_scope_label(
@@ -156,11 +158,13 @@ class AnalysisService:
                 result.pdf_available = True
                 result.ai_total_tokens = _last_result.ai_total_tokens
 
+        duration_ms = int((time.perf_counter() - analysis_started) * 1000)
+        result.duration_ms = duration_ms
         log_success(
             "analysis",
             (
                 f"Analysis run finished — {len(discrepancies)} discrepancies, "
-                f"ai_used={ai_analysis_used}"
+                f"ai_used={ai_analysis_used}, duration_ms={duration_ms}"
                 + (
                     f", ai_tokens={ai_total_tokens:,}"
                     if ai_total_tokens

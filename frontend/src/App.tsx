@@ -31,6 +31,7 @@ import {
   reloadSharedData,
   resetSession,
 } from "./services/api";
+import { formatAnalysisDuration } from "./utils/formatDuration";
 import "./App.css";
 
 const LLM_MODEL_STORAGE_KEY = "commodity_llm_model";
@@ -64,6 +65,7 @@ export default function App() {
   const [scopeVbelns, setScopeVbelns] = useState<string[]>([]);
   const [scopeErdatFrom, setScopeErdatFrom] = useState("");
   const [scopeErdatTo, setScopeErdatTo] = useState("");
+  const [analysisDurationMs, setAnalysisDurationMs] = useState<number | null>(null);
 
   const activeMappings = mappings.filter((m) => m.enabled && m.vbap_field && m.cmm_field);
   const allFilesLoaded = EXPECTED_UPLOAD_FILES.every(
@@ -172,8 +174,10 @@ export default function App() {
   };
 
   const handleAnalyze = async () => {
+    const startedAt = performance.now();
     setAnalyzing(true);
     setError(null);
+    setAnalysisDurationMs(null);
     setWorkflowStep("progress");
     try {
       if (activeMappings.length === 0) {
@@ -189,12 +193,14 @@ export default function App() {
         erdatFrom: scopeErdatFrom,
         erdatTo: scopeErdatTo,
       });
-      setResult(data);
-      setWorkflowStep("results");
       if (data.pdf_available) {
         await downloadPdfReport();
         setPdfMessage("PDF report downloaded successfully.");
       }
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      setAnalysisDurationMs(data.duration_ms ?? elapsedMs);
+      setResult(data);
+      setWorkflowStep("results");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Analysis failed");
       setWorkflowStep("model");
@@ -209,7 +215,14 @@ export default function App() {
     try {
       const reloaded = await reloadSharedData();
       setFileStats(statsMap(reloaded.file_stats));
-      setHealth(await fetchHealth());
+      setHealth({
+        status: "ok",
+        data_source: reloaded.data_source,
+        shared_data_dir: reloaded.shared_data_dir,
+        google_drive_folder_id: reloaded.google_drive_folder_id ?? null,
+        google_drive_configured: reloaded.google_drive_configured ?? false,
+        tables_loaded: reloaded.tables_loaded,
+      });
       await loadCompareFields();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reload shared drive");
@@ -223,6 +236,7 @@ export default function App() {
     if (result && step !== "results") {
       setResult(null);
       setPdfMessage(null);
+      setAnalysisDurationMs(null);
     }
     setWorkflowStep(step);
   };
@@ -237,6 +251,7 @@ export default function App() {
     setResult(null);
     setError(null);
     setPdfMessage(null);
+    setAnalysisDurationMs(null);
     setAnalyzing(false);
     setLoadingPhase(0);
     setWorkflowStep("upload");
@@ -358,8 +373,7 @@ export default function App() {
                   <span className="step-badge">Step 2</span>
                   <h2>Select field attributes</h2>
                   <p>
-                    Map VBAP columns to CMM_VLOGP fields used to identify mismatches.
-                    Enable the attributes you want compared during reconciliation.
+                    Map VBAP columns to CMM_VLOGP fields used to identify mismatches. Enable the attributes you want compared during reconciliation.
                   </p>
                 </div>
                 <AttributeMappingPanel
@@ -410,9 +424,13 @@ export default function App() {
                     <span className="step-badge">Step 5</span>
                     <h2>Analysis results</h2>
                     <p>
-                      Review discrepancies, AI insights, and recommended actions. Download
-                      the PDF report for sharing with operations teams.
+                      Review discrepancies, AI insights, and recommended actions. Download the PDF report for sharing with operations teams.
                     </p>
+                    {analysisDurationMs != null && (
+                      <p className="analysis-duration" role="status">
+                        Completed in {formatAnalysisDuration(analysisDurationMs)}
+                      </p>
+                    )}
                   </div>
                   {result.pdf_available && (
                     <button
@@ -424,7 +442,10 @@ export default function App() {
                     </button>
                   )}
                 </div>
-                <ResultsDashboard result={result} />
+                <ResultsDashboard
+                  result={result}
+                  analysisDurationMs={analysisDurationMs}
+                />
               </section>
             )}
           </main>

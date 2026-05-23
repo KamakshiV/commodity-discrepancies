@@ -113,7 +113,10 @@ export async function fetchFileStats(): Promise<FileStatsResponse> {
 
 export async function reloadSharedData(): Promise<{
   message: string;
+  data_source: string;
   shared_data_dir: string;
+  google_drive_folder_id?: string | null;
+  google_drive_configured?: boolean;
   tables_loaded: string[];
   file_stats: FileUploadStats[];
 }> {

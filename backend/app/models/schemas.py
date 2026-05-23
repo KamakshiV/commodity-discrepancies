@@ -72,6 +72,7 @@ class AnalysisResult(BaseModel):
     ai_analysis_used: bool = False
     application_logs: List[ApplicationLogEntry] = Field(default_factory=list)
     ai_total_tokens: Optional[int] = None
+    duration_ms: Optional[int] = None
 
 
 class HealthResponse(BaseModel):

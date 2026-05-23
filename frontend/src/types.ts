@@ -65,6 +65,7 @@ export interface AnalysisResult {
   ai_analysis_used?: boolean;
   application_logs?: ApplicationLogEntry[];
   ai_total_tokens?: number | null;
+  duration_ms?: number | null;
 }
 
 export interface HealthResponse {

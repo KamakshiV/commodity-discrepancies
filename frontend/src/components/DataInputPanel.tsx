@@ -202,12 +202,9 @@ export default function DataInputPanel({
           ) : (
             <code className="shared-drive-path">{sharedDataDir || "Not configured"}</code>
           )}
-          <span className="shared-drive-cache muted">
-            Cache: {sharedDataDir || "—"}
-            {usesGoogleDrive && !googleDriveConfigured && (
-              <span className="shared-drive-warn"> · credentials missing</span>
-            )}
-          </span>
+          {usesGoogleDrive && !googleDriveConfigured && (
+            <span className="shared-drive-warn muted">Google Drive credentials missing</span>
+          )}
         </div>
         <button
           type="button"
