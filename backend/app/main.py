@@ -26,6 +26,7 @@ app.include_router(router, prefix="/api")
 @app.on_event("startup")
 def startup():
     configure_logging()
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
     log_info("system", "Commodity Discrepancy Analysis API starting")
     data_store.load_all()
     log_info(

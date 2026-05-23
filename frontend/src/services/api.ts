@@ -8,7 +8,33 @@ import type {
   LlmConfigResponse,
 } from "../types";
 
-const API = "/api";
+/** Dev: Vite proxy `/api` → localhost:8000. Prod: set VITE_API_URL or use vercel.json proxy. */
+function apiBase(): string {
+  const raw = import.meta.env.VITE_API_URL?.trim();
+  if (!raw) return "/api";
+  return raw.replace(/\/$/, "");
+}
+
+const API = apiBase();
+
+async function parseErrorDetail(res: Response, fallback: string): Promise<string> {
+  const text = await res.text();
+  try {
+    const err = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+    const d = err.detail;
+    if (typeof d === "string") return d;
+    if (Array.isArray(d) && d[0] && typeof d[0] === "object" && "msg" in d[0]) {
+      return String(d[0].msg);
+    }
+  } catch {
+    /* not JSON — e.g. Vercel 404 HTML */
+  }
+  if (text && text.length < 200) return text;
+  if (res.status === 404) {
+    return `${fallback} (404). Check VITE_API_URL or vercel.json API proxy to the Render backend.`;
+  }
+  return `${fallback} (HTTP ${res.status})`;
+}
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${API}/health`);
@@ -45,8 +71,7 @@ export async function runAnalysis(
     }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || "Analysis failed");
+    throw new Error(await parseErrorDetail(res, "Analysis failed"));
   }
   return res.json();
 }
@@ -64,8 +89,7 @@ export async function clearUploadedFiles(): Promise<{
 }> {
   const res = await fetch(`${API}/data/uploads`, { method: "DELETE" });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || "Failed to clear uploads");
+    throw new Error(await parseErrorDetail(res, "Failed to clear uploads"));
   }
   return res.json();
 }
@@ -79,8 +103,7 @@ export async function uploadCsvFiles(
   }
   const res = await fetch(`${API}/data/upload`, { method: "POST", body: form });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || "Upload failed");
+    throw new Error(await parseErrorDetail(res, "Upload failed"));
   }
   return res.json();
 }
@@ -98,8 +121,7 @@ export function pdfDownloadUrl(): string {
 export async function downloadPdfReport(filename?: string): Promise<void> {
   const res = await fetch(`${API}/report/pdf`);
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail || "PDF download failed");
+    throw new Error(await parseErrorDetail(res, "PDF download failed"));
   }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

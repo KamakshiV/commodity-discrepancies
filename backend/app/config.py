@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         "gpt-4o-mini,gpt-4o,gpt-4-turbo,gpt-4,gpt-3.5-turbo,o1-mini,o3-mini"
     )
     data_dir: Path = BACKEND_ROOT / "data" / "sample"
+    # Override on Render if needed, e.g. UPLOAD_DIR=/tmp/commodity-uploads
     upload_dir: Path = BACKEND_ROOT / "data" / "uploads"
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 

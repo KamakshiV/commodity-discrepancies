@@ -114,10 +114,38 @@ Mappings are saved in browser localStorage and sent to the API on each run.
 5. Action Recommendation Specialist  
 6. PDF Report Writer (on PDF generation)
 
+## Deployment (Vercel + Render)
+
+| Service | URL / notes |
+|---------|-------------|
+| **Backend (Render)** | `https://commodity-discrepancies.onrender.com` — start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| **Health check** | `/api/health` (not `/`) |
+| **Frontend (Vercel)** | Root directory: `frontend` — `vercel.json` proxies `/api/*` to Render |
+
+**Render environment variables**
+
+- `OPENAI_API_KEY` — required for AI steps
+- `CORS_ORIGINS` — only needed if the frontend calls Render **directly** via `VITE_API_URL` (comma-separated Vercel URL + localhost)
+- Optional `UPLOAD_DIR` — writable path if the default upload folder fails
+
+**Vercel**
+
+- Redeploy after pulling `frontend/vercel.json` so uploads hit Render instead of a non-existent `/api` on Vercel.
+- Optional: `VITE_API_URL=https://commodity-discrepancies.onrender.com/api` (then set `CORS_ORIGINS` on Render to your Vercel origin).
+
+**Upload fails after deploy?**
+
+1. Browser Network tab: upload should go to `…/api/data/upload` on your Vercel app (proxied) or to Render if `VITE_API_URL` is set.
+2. If you see **404 HTML** from Vercel, redeploy with `vercel.json` or set `VITE_API_URL`.
+3. If you see **CORS** errors, add your Vercel URL to `CORS_ORIGINS` on Render.
+4. Render **free tier** disk is ephemeral — uploads are cleared on redeploy.
+
 ## Troubleshooting
 
 | Error | Fix |
 |-------|-----|
+| Upload / API 404 on Vercel | Add `frontend/vercel.json` or set `VITE_API_URL` to Render `/api` and redeploy |
+| CORS blocked on upload | Set `CORS_ORIGINS=https://your-app.vercel.app,http://localhost:5173` on Render |
 | `command not found: python` | Use `python3` to create the venv; after `source .venv/bin/activate`, `python` works inside the venv |
 | `unsupported operand type(s) for \|` | Caused by old **CrewAI on Python 3.9** — reinstall AI deps: `pip install -r requirements-ai.txt` (OpenAI SDK only, no CrewAI) |
 | `No matching distribution found for crewai>=0.86` | Use `requirements-ai.txt` (OpenAI only) or `requirements-ai-py310.txt` if you want CrewAI on Python 3.10+ |
