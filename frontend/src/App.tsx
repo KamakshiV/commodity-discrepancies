@@ -297,7 +297,7 @@ export default function App() {
           <p className="hero-eyebrow">Turiaixis · SAP Commodity Intelligence</p>
           <h1>Commodity Discrepancy Analysis</h1>
           <p className="hero-subtitle">
-            Reconcile VBAP with CMM_VLOGP using deterministic rules, then let AI explain root causes and deliver a PDF report.
+            Identifying Discrepancies between VBAP and VLOP using deterministic rules, then let AI explain root causes and deliver a PDF report.
           </p>
         </div>
       </header>

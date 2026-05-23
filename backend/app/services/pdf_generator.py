@@ -6,7 +6,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.models.schemas import AgentInsight, AnalysisSummary, DiscrepancyCategory, DiscrepancyRecord
 from app.services.field_compare import format_display_value
@@ -220,6 +220,51 @@ def _record_count_footer(count: int, overview_count: int, label: str) -> str:
     return f"<b>Total {label}: {count}</b> ({tally})"
 
 
+def _mismatch_inline_summary(d: DiscrepancyRecord) -> str:
+    parts: List[str] = []
+    for mf in d.mismatched_fields or []:
+        attr, vbap_v, cmm_v = _parse_mismatch_field(mf)
+        short = attr.split(" (VBAP)")[0].strip() if " (VBAP)" in attr else attr
+        parts.append(f"{short}: VBAP {vbap_v}, CMM {cmm_v}")
+    return "; ".join(parts) if parts else "Attribute difference detected"
+
+
+def _group_recommended_actions(
+    insights: List[AgentInsight],
+    discrepancies: List[DiscrepancyRecord],
+) -> List[tuple]:
+    """Return [(action, owner, [(vbeln, posnr), ...]), ...] in stable order."""
+    grouped: Dict[tuple, List[tuple]] = {}
+
+    if insights:
+        for ins in insights:
+            action = (ins.recommended_action or "Review discrepancy").strip()
+            owner = (ins.recommended_owner or "TBD").strip()
+            key = (action, owner)
+            order = (ins.vbeln or "—", ins.posnr or "—")
+            if order not in grouped.setdefault(key, []):
+                grouped[key].append(order)
+    else:
+        for d in discrepancies:
+            if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP:
+                has_qrfc = bool((d.qrf_research or {}).get("queue_matches"))
+                key = (
+                    ("Reprocess failed qRFC queue", "SAP Basis")
+                    if has_qrfc
+                    else ("Manual investigation required", "Functional Analyst")
+                )
+            else:
+                key = (
+                    "Validate whether CMM_VLOGP should have been updated",
+                    "SAP Commodity Team",
+                )
+            order = (d.vbeln or "—", d.posnr or "—")
+            if order not in grouped.setdefault(key, []):
+                grouped[key].append(order)
+
+    return [(action, owner, orders) for (action, owner), orders in grouped.items()]
+
+
 def _format_qrfc_readable(research: Optional[Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
     if not research:
@@ -325,12 +370,6 @@ class PDFGenerator:
                 self._body,
             )
         )
-        analysis_label = (
-            f"Analysis: OpenAI ({_escape(llm_model)})"
-            if ai_analysis_used and llm_model
-            else "Analysis: Rule-based (deterministic engine + SAP research)"
-        )
-        story.append(Paragraph(analysis_label, self._small))
         story.append(Spacer(1, 0.25 * inch))
 
         missing = [d for d in discrepancies if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP]
@@ -339,7 +378,6 @@ class PDFGenerator:
         for title, key in [
             ("Executive Summary", "executive_summary"),
             ("Why It Matters", "why_it_matters"),
-            ("Recommended Actions", "recommended_actions"),
         ]:
             content = narrative.get(key) or (
                 summary.executive_summary if key == "executive_summary" else ""
@@ -348,6 +386,8 @@ class PDFGenerator:
                 story.append(Paragraph(title, self._heading_style))
                 story.append(Paragraph(_escape(str(content)), self._body))
                 story.append(Spacer(1, 0.08 * inch))
+
+        story.extend(self._recommended_actions_blocks(summary, insights, discrepancies))
 
         story.extend(self._what_we_found_blocks(summary, missing, mismatch))
 
@@ -417,23 +457,10 @@ class PDFGenerator:
                 )
             )
             story.append(Spacer(1, 0.1 * inch))
-            for d in mismatch:
-                story.extend(self._mismatch_record_block(d))
-
-        if summary.recommended_actions:
-            story.append(PageBreak())
-            story.append(Paragraph("Action Plan", self._heading_style))
-            act_rows = [["Issue", "Owner", "What to do"]]
-            for a in summary.recommended_actions:
-                act_rows.append([
-                    str(a.get("issue", "")),
-                    str(a.get("recommended_owner", "")),
-                    str(a.get("action", "")),
-                ])
-            story.append(self._para_table(act_rows, [2.0 * inch, 1.5 * inch, 3.0 * inch]))
+            story.extend(self._category2_detail_blocks(mismatch))
 
         if insights:
-            story.append(Spacer(1, 0.15 * inch))
+            story.append(Spacer(1, 0.2 * inch))
             story.append(Paragraph("Root-Cause Guidance", self._heading_style))
             ins_rows = [["Sales order", "Source", "Likely cause", "Recommended fix"]]
             for ins in insights[:40]:
@@ -458,8 +485,8 @@ class PDFGenerator:
                 "reprocess failed queues.<br/>"
                 "2. For <b>Attribute mismatch</b> items, compare the field values listed and "
                 "validate CDPOS change history for the order line.<br/>"
-                "3. Use the Action Plan owners (SAP Basis, Commodity team, Functional analyst) "
-                "to route each fix.",
+                "3. Use the Recommended Actions owners (SAP Basis, Commodity team, "
+                "Functional analyst) to route each fix.",
                 self._body,
             )
         )
@@ -545,6 +572,89 @@ class PDFGenerator:
         blocks.append(Spacer(1, 0.1 * inch))
         return blocks
 
+    def _recommended_actions_blocks(
+        self,
+        summary: AnalysisSummary,
+        insights: List[AgentInsight],
+        discrepancies: List[DiscrepancyRecord],
+    ) -> List[Any]:
+        """Deterministic recommended actions with numbered order lists."""
+        groups = _group_recommended_actions(insights, discrepancies)
+        blocks: List[Any] = [Paragraph("Recommended Actions", self._heading_style)]
+
+        if not groups:
+            blocks.append(
+                Paragraph(
+                    "No specific actions were generated. Review discrepancies in this report.",
+                    self._body,
+                )
+            )
+            blocks.append(Spacer(1, 0.1 * inch))
+            return blocks
+
+        for action_idx, (action, owner, orders) in enumerate(groups, start=1):
+            blocks.append(
+                Paragraph(
+                    f"{action_idx}. <b>{_escape(action)}</b> — Owner: {_escape(owner)}",
+                    self._body,
+                )
+            )
+            for order_idx, (vbeln, posnr) in enumerate(orders, start=1):
+                blocks.append(
+                    Paragraph(
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;{order_idx}. "
+                        f"Order {_escape(vbeln)} / item {_escape(posnr)}",
+                        self._small,
+                    )
+                )
+            blocks.append(Spacer(1, 0.06 * inch))
+
+        blocks.append(Spacer(1, 0.04 * inch))
+        return blocks
+
+    def _category2_detail_blocks(self, mismatch: List[DiscrepancyRecord]) -> List[Any]:
+        """Split Category 2 detail by CDPOS availability to avoid repeated messages."""
+        with_history = [d for d in mismatch if d.change_history]
+        without_history = [d for d in mismatch if not d.change_history]
+        blocks: List[Any] = []
+
+        if with_history:
+            blocks.append(
+                Paragraph(
+                    f"2A — With CDPOS change history ({len(with_history)} order line(s))",
+                    self._subheading,
+                )
+            )
+            for d in with_history:
+                blocks.extend(self._mismatch_record_block(d))
+
+        if without_history:
+            blocks.append(
+                Paragraph(
+                    f"2B — No CDPOS change history ({len(without_history)} order line(s))",
+                    self._subheading,
+                )
+            )
+            blocks.append(
+                Paragraph(
+                    "These order lines have attribute mismatches but no matching CDPOS "
+                    "change documents were found for the sales order.",
+                    self._small,
+                )
+            )
+            for idx, d in enumerate(without_history, start=1):
+                summary_text = _mismatch_inline_summary(d)
+                blocks.append(
+                    Paragraph(
+                        f"{idx}. Order {_escape(d.vbeln or '—')} / item "
+                        f"{_escape(d.posnr or '—')} — {_escape(summary_text)}",
+                        self._small,
+                    )
+                )
+            blocks.append(Spacer(1, 0.1 * inch))
+
+        return blocks
+
     def _para_table(
         self,
         data: List[List[str]],
@@ -604,8 +714,10 @@ class PDFGenerator:
 
         if mismatches:
             blocks.append(Paragraph("MISMATCHED ATTRIBUTES", self._detail_label))
-            for mf in mismatches:
-                blocks.append(Paragraph(f"• {_format_mismatch_line(mf)}", self._small))
+            for idx, mf in enumerate(mismatches, start=1):
+                blocks.append(
+                    Paragraph(f"{idx}. {_format_mismatch_line(mf)}", self._small)
+                )
 
         if d.change_history:
             blocks.append(
@@ -626,15 +738,7 @@ class PDFGenerator:
                     _change_field(ch, "VALUE_NEW", "value_new", format_value=True),
                 ])
             blocks.append(self._para_table(ch_rows, CHANGE_HISTORY_COL_WIDTHS))
-        elif mismatches:
-            blocks.append(
-                Paragraph(
-                    "No CDPOS change history found for this order line.",
-                    self._small,
-                )
-            )
-
-        if not mismatches and not d.change_history:
+        elif not mismatches:
             blocks.append(
                 Paragraph("Attribute differences were detected by the rule engine.", self._small)
             )

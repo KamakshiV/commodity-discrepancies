@@ -60,12 +60,6 @@ export default function ResultsDashboard({ result, analysisDurationMs }: Props) 
       <div className="metrics-interactive">
         {[
           {
-            label: "Commodity-relevant",
-            value: summary.total_commodity_relevant,
-            pct: 100,
-            variant: "neutral",
-          },
-          {
             label: "Missing in CMM_VLOGP",
             value: summary.missing_count,
             pct: (summary.missing_count / total) * 100,
@@ -76,12 +70,6 @@ export default function ResultsDashboard({ result, analysisDurationMs }: Props) 
             value: summary.mismatch_count,
             pct: (summary.mismatch_count / total) * 100,
             variant: "warn",
-          },
-          {
-            label: "Clean records",
-            value: summary.clean_count,
-            pct: (summary.clean_count / total) * 100,
-            variant: "ok",
           },
         ].map((m) => (
           <button
