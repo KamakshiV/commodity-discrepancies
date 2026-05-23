@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router
+from app.api.routes import health, router
 from app.config import settings
 from app.services.app_logger import configure_logging, log_info
 from app.services.data_loader import data_store
@@ -21,6 +21,9 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+
+# Alias for Render health checks or VITE_API_URL without /api prefix
+app.get("/health")(health)
 
 
 @app.on_event("startup")

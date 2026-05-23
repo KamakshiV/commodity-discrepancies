@@ -8,11 +8,19 @@ import type {
   LlmConfigResponse,
 } from "../types";
 
-/** Dev: Vite proxy `/api` → localhost:8000. Prod: set VITE_API_URL or use vercel.json proxy. */
+/**
+ * Dev: Vite proxy `/api` → localhost:8000.
+ * Prod: vercel.json proxy uses `/api`, or set VITE_API_URL to the Render host
+ * (with or without `/api` — host-only URLs are normalized automatically).
+ */
 function apiBase(): string {
   const raw = import.meta.env.VITE_API_URL?.trim();
   if (!raw) return "/api";
-  return raw.replace(/\/$/, "");
+  let base = raw.replace(/\/$/, "");
+  if (base.startsWith("http") && !base.endsWith("/api")) {
+    base = `${base}/api`;
+  }
+  return base;
 }
 
 const API = apiBase();

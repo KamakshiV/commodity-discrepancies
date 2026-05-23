@@ -131,7 +131,7 @@ Mappings are saved in browser localStorage and sent to the API on each run.
 **Vercel**
 
 - Redeploy after pulling `frontend/vercel.json` so uploads hit Render instead of a non-existent `/api` on Vercel.
-- Optional: `VITE_API_URL=https://commodity-discrepancies.onrender.com/api` (then set `CORS_ORIGINS` on Render to your Vercel origin).
+- Optional: `VITE_API_URL=https://commodity-discrepancies.onrender.com` (host only is fine; `/api` is appended in the app). Set `CORS_ORIGINS` on Render to your Vercel origin.
 
 **Upload fails after deploy?**
 
