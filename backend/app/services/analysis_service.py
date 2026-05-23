@@ -12,7 +12,7 @@ from app.services.app_logger import (
     log_success,
     log_warning,
 )
-from app.services.data_loader import DEFAULT_COMPARE_MAPPINGS, data_store
+from app.services.data_loader import DEFAULT_COMPARE_MAPPINGS, build_scope_label, data_store
 from app.services.pdf_generator import PDFGenerator
 from app.services.rule_engine import RuleEngine
 
@@ -39,19 +39,24 @@ class AnalysisService:
         compare_mappings: Optional[List[AttributeMapping]] = None,
         llm_model: Optional[str] = None,
         generate_pdf: bool = True,
+        scope_mode: str = "vbeln",
+        scope_vbelns: Optional[List[str]] = None,
+        scope_erdat: Optional[str] = None,
     ) -> AnalysisResult:
         global _last_result, _pdf_cache, _last_compare_mappings, _last_llm_model
 
         begin_analysis_logs()
         _last_llm_model = _resolve_model(llm_model)
 
+        scope_label = build_scope_label(scope_mode, scope_vbelns, scope_erdat)
         log_info(
             "analysis",
             "Analysis run started",
             detail=(
                 f"use_ai={use_ai}, model={_last_llm_model}, "
                 f"generate_pdf={generate_pdf}, "
-                f"openai_configured={is_openai_configured()}"
+                f"openai_configured={is_openai_configured()}, "
+                f"scope={scope_label}"
             ),
         )
 
@@ -70,6 +75,10 @@ class AnalysisService:
         ai_total_tokens = 0
 
         with StageTimer("data_load", "Loading SAP table CSVs", "Data load complete"):
+            if data_store._require_reload:
+                raise ValueError(
+                    "Data is not loaded in memory. Reload or sync data from Step 1 before analyzing."
+                )
             data_store.load_all()
             tables = data_store.loaded_tables()
             log_info(
@@ -83,7 +92,12 @@ class AnalysisService:
             "Running rule engine (VBAP ↔ CMM_VLOGP join & compare)",
             "Rule engine complete",
         ):
-            engine = RuleEngine(data_store, compare_mappings=_last_compare_mappings)
+            engine = RuleEngine(
+                data_store,
+                compare_mappings=_last_compare_mappings,
+                scope_vbelns=scope_vbelns if scope_mode == "vbeln" else None,
+                scope_erdat=scope_erdat if scope_mode == "erdat" else None,
+            )
             total = engine.count_commodity_relevant()
             discrepancies = engine.run()
             missing = sum(
@@ -122,6 +136,7 @@ class AnalysisService:
             ai_analysis_used=ai_analysis_used,
             ai_total_tokens=ai_total_tokens if ai_total_tokens else None,
         )
+        result.summary.scope_filter = scope_label
         _last_result = result
         _pdf_cache = None
 

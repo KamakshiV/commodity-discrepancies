@@ -8,14 +8,15 @@ import AttributeMappingPanel, {
 } from "./components/AttributeMappingPanel";
 import ModelSelectionPanel from "./components/ModelSelectionPanel";
 import ResultsDashboard from "./components/ResultsDashboard";
-import UploadPanel from "./components/UploadPanel";
+import DataInputPanel from "./components/DataInputPanel";
 import Breadcrumbs, { STEP_ORDER, type AppStep } from "./components/Breadcrumbs";
 import { DEFAULT_LLM_MODEL, FALLBACK_LLM_MODELS } from "./constants/llmModels";
-import { EXPECTED_UPLOAD_FILES, resolveUploadFilename } from "./constants/uploadFiles";
+import { EXPECTED_UPLOAD_FILES } from "./constants/uploadFiles";
 import type {
   AnalysisResult,
   AttributeMapping,
   CompareFieldsResponse,
+  DataInputMode,
   FileUploadStats,
   HealthResponse,
   LlmConfigResponse,
@@ -27,8 +28,8 @@ import {
   downloadPdfReport,
   fetchLlmConfig,
   runAnalysis,
-  clearUploadedFiles,
-  uploadCsvFiles,
+  reloadSharedData,
+  resetSession,
 } from "./services/api";
 import "./App.css";
 
@@ -57,14 +58,18 @@ export default function App() {
   const [pdfMessage, setPdfMessage] = useState<string | null>(null);
   const [workflowStep, setWorkflowStep] = useState<AppStep>("upload");
   const [fileStats, setFileStats] = useState<Record<string, FileUploadStats>>({});
-  const [uploading, setUploading] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const [maxReachableStep, setMaxReachableStep] = useState<AppStep>("upload");
+  const [inputMode, setInputMode] = useState<DataInputMode>("vbeln");
+  const [scopeVbelns, setScopeVbelns] = useState<string[]>([]);
+  const [scopeErdat, setScopeErdat] = useState("");
 
   const activeMappings = mappings.filter((m) => m.enabled && m.vbap_field && m.cmm_field);
   const allFilesLoaded = EXPECTED_UPLOAD_FILES.every(
     (f) => fileStats[f.filename]?.loaded
   );
-  const canAnalyze = activeMappings.length > 0 && !!health && allFilesLoaded;
+  const dataReady = (health?.tables_loaded?.length ?? 0) >= EXPECTED_UPLOAD_FILES.length;
+  const canAnalyze = activeMappings.length > 0 && !!health && allFilesLoaded && dataReady;
   const currentStep = deriveStep(result, workflowStep);
 
   const loadLlmConfig = useCallback(async () => {
@@ -132,12 +137,12 @@ export default function App() {
   }, [analyzing]);
 
   useEffect(() => {
-    if (allFilesLoaded) {
+    if (allFilesLoaded && dataReady) {
       setMaxReachableStep((prev) =>
         STEP_ORDER.indexOf(prev) < STEP_ORDER.indexOf("mapping") ? "mapping" : prev
       );
     }
-  }, [allFilesLoaded]);
+  }, [allFilesLoaded, dataReady]);
 
   useEffect(() => {
     if (canAnalyze) {
@@ -179,7 +184,11 @@ export default function App() {
         return;
       }
       setPdfMessage(null);
-      const data = await runAnalysis(useAi, mappings, llmModel, true);
+      const data = await runAnalysis(useAi, mappings, llmModel, true, {
+        mode: inputMode,
+        vbelns: scopeVbelns,
+        erdat: scopeErdat,
+      });
       setResult(data);
       setWorkflowStep("results");
       if (data.pdf_available) {
@@ -194,48 +203,18 @@ export default function App() {
     }
   };
 
-  const handleUploadFiles = async (files: File[]) => {
-    const unknown: string[] = [];
-    const byName = new Map<string, File>();
-
-    for (const file of files) {
-      const canonical = resolveUploadFilename(file.name);
-      if (!canonical) {
-        if (file.name.toLowerCase().endsWith(".csv")) {
-          unknown.push(file.name);
-        }
-        continue;
-      }
-      byName.set(
-        canonical,
-        file.name.toLowerCase() === canonical
-          ? file
-          : new File([file], canonical, { type: file.type || "text/csv" })
-      );
-    }
-
-    if (unknown.length) {
-      setError(
-        `Unrecognized file(s): ${unknown.join(", ")}. ` +
-          "Name each export to start with its table (e.g. VBAP_*.csv, CMM_VLOGP_*.csv) " +
-          `or use: ${EXPECTED_UPLOAD_FILES.map((f) => f.filename).join(", ")}`
-      );
-    }
-
-    const toUpload = [...byName.values()];
-    if (!toUpload.length) return;
-
-    setUploading(true);
-    if (!unknown.length) setError(null);
+  const handleReloadSharedData = async () => {
+    setReloading(true);
+    setError(null);
     try {
-      await uploadCsvFiles(toUpload);
-      await loadHealth();
-      const stats = await fetchFileStats();
-      setFileStats(statsMap(stats.files));
+      const reloaded = await reloadSharedData();
+      setFileStats(statsMap(reloaded.file_stats));
+      setHealth(await fetchHealth());
+      await loadCompareFields();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(err instanceof Error ? err.message : "Failed to reload shared drive");
     } finally {
-      setUploading(false);
+      setReloading(false);
     }
   };
 
@@ -251,7 +230,7 @@ export default function App() {
   const handleStartOver = async () => {
     if (analyzing) return;
     const confirmed = window.confirm(
-      "Start over? This clears your analysis, deletes all uploaded CSV files from the server, and returns to step 1."
+      "Start over? This clears your analysis, scope selections, and the in-memory data cache. You will need to reload or sync data before continuing."
     );
     if (!confirmed) return;
 
@@ -262,12 +241,14 @@ export default function App() {
     setLoadingPhase(0);
     setWorkflowStep("upload");
     setMaxReachableStep("upload");
-    setUploading(false);
+    setInputMode("vbeln");
+    setScopeVbelns([]);
+    setScopeErdat("");
     clearSavedMappings();
 
     try {
-      const cleared = await clearUploadedFiles();
-      setFileStats(statsMap(cleared.file_stats));
+      const reset = await resetSession();
+      setFileStats(statsMap(reset.file_stats));
       setHealth(await fetchHealth());
       const fields = await fetchCompareFields();
       setCompareFields(fields);
@@ -331,8 +312,8 @@ export default function App() {
             type="button"
             className="btn btn-outline btn-start-over"
             onClick={handleStartOver}
-            disabled={analyzing || uploading}
-            title="Clear analysis, delete uploaded files, and return to upload step"
+            disabled={analyzing || reloading}
+            title="Clear analysis and return to data selection"
           >
             Start over
           </button>
@@ -358,10 +339,25 @@ export default function App() {
         <div className="workspace workspace-single">
           <main className="workspace-main">
             {currentStep === "upload" && !result && (
-              <UploadPanel
+              <DataInputPanel
+                dataSource={health?.data_source ?? "local"}
+                sharedDataDir={health?.shared_data_dir ?? null}
+                googleDriveFolderId={health?.google_drive_folder_id ?? null}
+                googleDriveConfigured={health?.google_drive_configured ?? false}
                 fileStats={fileStats}
-                uploading={uploading}
-                onUploadFiles={handleUploadFiles}
+                dataReady={dataReady}
+                reloading={reloading}
+                inputMode={inputMode}
+                vbelns={scopeVbelns}
+                erdat={scopeErdat}
+                onInputModeChange={(mode) => {
+                  setInputMode(mode);
+                  if (mode === "vbeln") setScopeErdat("");
+                  else setScopeVbelns([]);
+                }}
+                onVbelnsChange={setScopeVbelns}
+                onErdatChange={setScopeErdat}
+                onReload={handleReloadSharedData}
                 onContinue={() => goToStep("mapping")}
               />
             )}
@@ -384,7 +380,7 @@ export default function App() {
                 />
                 <div className="step-panel-actions">
                   <button type="button" className="btn btn-outline" onClick={() => goToStep("upload")}>
-                    Back to upload
+                    Back to data selection
                   </button>
                   <button
                     type="button"

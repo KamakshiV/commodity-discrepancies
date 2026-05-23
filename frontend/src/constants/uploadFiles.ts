@@ -6,6 +6,8 @@ export interface ExpectedUploadFile {
   description: string;
 }
 
+const DATA_FILE_EXTENSIONS = [".csv", ".xlsx", ".xls", ".xlsm"] as const;
+
 /** Six SAP tables in upload order. */
 export const EXPECTED_UPLOAD_FILES: ExpectedUploadFile[] = [
   {
@@ -13,42 +15,42 @@ export const EXPECTED_UPLOAD_FILES: ExpectedUploadFile[] = [
     filename: "vbap.csv",
     table: "VBAP",
     label: "VBAP",
-    description: "Sales document item data (commodity-relevant rows)",
+    description: "Sales document item data (CSV or Excel)",
   },
   {
     id: "cmm_vlogp",
     filename: "cmm_vlogp.csv",
     table: "CMM_VLOGP",
     label: "CMM_VLOGP",
-    description: "Commodity logistics document items",
+    description: "Commodity logistics document items (CSV or Excel)",
   },
   {
     id: "qrfc_i_err_state",
     filename: "qrfc_i_err_state.csv",
     table: "QRFC_I_ERR_STATE",
     label: "qRFC error state",
-    description: "Queued RFC error records for root-cause research",
+    description: "Queued RFC error records (CSV or Excel)",
   },
   {
     id: "qrfc_i_qin_top",
     filename: "qrfc_i_qin_top.csv",
     table: "QRFC_I_QIN_TOP",
     label: "qRFC queue",
-    description: "Inbound qRFC queue header records",
+    description: "Inbound qRFC queue header records (CSV or Excel)",
   },
   {
     id: "cdhdr",
     filename: "cdhdr.csv",
     table: "CDHDR",
     label: "CDHDR",
-    description: "Change document headers",
+    description: "Change document headers (CSV or Excel)",
   },
   {
     id: "cdpos",
     filename: "cdpos.csv",
     table: "CDPOS",
     label: "CDPOS",
-    description: "Change document item positions",
+    description: "Change document item positions (CSV or Excel)",
   },
 ];
 
@@ -71,11 +73,12 @@ const CANONICAL_FILENAMES = new Set(
 
 export function resolveUploadFilename(originalName: string): string | null {
   const lower = originalName.toLowerCase().trim();
-  if (!lower.endsWith(".csv")) return null;
+  const ext = DATA_FILE_EXTENSIONS.find((suffix) => lower.endsWith(suffix));
+  if (!ext) return null;
 
   if (CANONICAL_FILENAMES.has(lower)) return lower;
 
-  const stem = lower.slice(0, -4);
+  const stem = lower.slice(0, -ext.length);
   for (const { filename, stems } of CANONICAL_UPLOAD_PATTERNS) {
     for (const pattern of stems) {
       if (
@@ -90,6 +93,11 @@ export function resolveUploadFilename(originalName: string): string | null {
   return null;
 }
 
+export function formatHintForTable(canonicalFilename: string): string {
+  const stem = canonicalFilename.replace(/\.csv$/i, "");
+  return `${stem}.csv / ${stem}.xlsx / ${stem}.xls`;
+}
+
 export function expectedFilenameHint(): string {
-  return EXPECTED_UPLOAD_FILES.map((f) => f.filename).join(", ");
+  return EXPECTED_UPLOAD_FILES.map((f) => formatHintForTable(f.filename)).join(", ");
 }

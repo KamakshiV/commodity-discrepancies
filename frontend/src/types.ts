@@ -28,6 +28,7 @@ export interface AnalysisSummary {
   executive_summary: string;
   root_cause_summary: string;
   recommended_actions: { issue: string; recommended_owner: string; action: string }[];
+  scope_filter?: string;
 }
 
 export interface LlmModelOption {
@@ -68,7 +69,10 @@ export interface AnalysisResult {
 
 export interface HealthResponse {
   status: string;
-  data_dir: string;
+  data_source: string;
+  shared_data_dir: string;
+  google_drive_folder_id?: string | null;
+  google_drive_configured: boolean;
   tables_loaded: string[];
 }
 
@@ -81,6 +85,7 @@ export interface FileUploadStats {
   columns: string[];
   file_size_bytes: number | null;
   source: string;
+  resolved_filename?: string | null;
 }
 
 export interface FileStatsResponse {
@@ -99,4 +104,25 @@ export interface CompareFieldsResponse {
   vbap_join_keys: string[];
   cmm_join_keys: string[];
   default_mappings: AttributeMapping[];
+}
+
+export type DataInputMode = "vbeln" | "erdat";
+
+export interface AnalysisScope {
+  mode: DataInputMode;
+  vbelns: string[];
+  erdat: string;
+}
+
+export interface ScopePreviewResponse {
+  mode: string;
+  vbap_loaded: boolean;
+  has_erdat_column: boolean;
+  commodity_relevant_total: number;
+  matching_rows: number;
+  matching_orders: number;
+  matched_vbelns: string[];
+  unknown_vbelns: string[];
+  sample_vbelns: string[];
+  message: string;
 }

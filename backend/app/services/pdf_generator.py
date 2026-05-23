@@ -232,8 +232,8 @@ class PDFGenerator:
                 story.append(Spacer(1, 0.08 * inch))
 
         story.append(Paragraph("Discrepancy Overview", self._heading_style))
-        filter_note = (
-            "All VBAP rows in the uploaded file"
+        filter_note = summary.scope_filter or (
+            "All VBAP rows from the shared drive"
             if summary.total_commodity_relevant > 0
             else "No VBAP rows loaded"
         )

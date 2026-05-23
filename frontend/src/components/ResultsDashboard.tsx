@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import ApplicationLogsPanel from "./ApplicationLogsPanel";
 import type { AgentInsight, AnalysisResult, DiscrepancyRecord } from "../types";
 
-type ResultsTab = "overview" | "discrepancies" | "insights" | "actions" | "logs";
+type ResultsTab = "overview" | "discrepancies" | "insights" | "actions";
 type CategoryFilter = "all" | "missing" | "mismatch";
 
 interface Props {
@@ -41,14 +40,11 @@ export default function ResultsDashboard({ result }: Props) {
   const insightFor = (vbeln: string, posnr: string): AgentInsight | undefined =>
     insights.find((i) => i.vbeln === vbeln && i.posnr === posnr);
 
-  const logCount = result.application_logs?.length ?? 0;
-
   const tabs: { id: ResultsTab; label: string; count?: number }[] = [
     { id: "overview", label: "Overview" },
     { id: "discrepancies", label: "Discrepancies", count: discrepancies.length },
     { id: "insights", label: "Insights", count: insights.length },
     { id: "actions", label: "Actions", count: summary.recommended_actions.length },
-    { id: "logs", label: "Application logs", count: logCount || undefined },
   ];
 
   return (
@@ -142,13 +138,6 @@ export default function ResultsDashboard({ result }: Props) {
                 <h3>Root cause summary</h3>
                 <p>{summary.root_cause_summary}</p>
               </article>
-            )}
-            {(result.application_logs?.length ?? 0) > 0 && (
-              <ApplicationLogsPanel
-                logs={result.application_logs ?? []}
-                aiTotalTokens={result.ai_total_tokens}
-                compact
-              />
             )}
             {!summary.executive_summary && !summary.root_cause_summary && (
               <p className="muted">Select a tab above to explore discrepancies and insights.</p>
@@ -329,12 +318,6 @@ export default function ResultsDashboard({ result }: Props) {
           </div>
         )}
 
-        {tab === "logs" && (
-          <ApplicationLogsPanel
-            logs={result.application_logs ?? []}
-            aiTotalTokens={result.ai_total_tokens}
-          />
-        )}
       </div>
     </section>
   );

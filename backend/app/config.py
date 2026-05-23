@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -18,10 +19,33 @@ class Settings(BaseSettings):
     openai_models: str = (
         "gpt-4o-mini,gpt-4o,gpt-4-turbo,gpt-4,gpt-3.5-turbo,o1-mini,o3-mini"
     )
-    data_dir: Path = BACKEND_ROOT / "data" / "sample"
-    # Override on Render if needed, e.g. UPLOAD_DIR=/tmp/commodity-uploads
-    upload_dir: Path = BACKEND_ROOT / "data" / "uploads"
+    shared_data_dir: Path = Field(
+        default=BACKEND_ROOT / "data" / "sample",
+        validation_alias=AliasChoices("SHARED_DATA_DIR", "DATA_DIR"),
+    )
+    # local = read CSVs from shared_data_dir on disk; google_drive = sync folder via API
+    data_source: str = "local"
+    google_drive_folder_id: str = ""
+    # Inline service-account JSON for Render (alternative: GOOGLE_APPLICATION_CREDENTIALS path)
+    google_service_account_json: str = ""
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+
+    @model_validator(mode="after")
+    def normalize_shared_data_dir(self) -> "Settings":
+        """Resolve relative DATA_DIR/SHARED_DATA_DIR against the backend root."""
+        p = self.shared_data_dir
+        if not p.is_absolute():
+            object.__setattr__(self, "shared_data_dir", (BACKEND_ROOT / p).resolve())
+        return self
+
+    @property
+    def data_dir(self) -> Path:
+        """Backward-compatible alias for shared_data_dir."""
+        return self.shared_data_dir
+
+    @property
+    def uses_google_drive(self) -> bool:
+        return self.data_source.strip().lower() == "google_drive"
 
     @property
     def cors_origin_list(self):

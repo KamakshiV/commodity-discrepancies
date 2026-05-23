@@ -1,9 +1,6 @@
-import shutil
-from pathlib import Path
-
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import Response
 
 from app.config import is_openai_configured, settings
@@ -17,32 +14,38 @@ from app.models.schemas import (
     HealthResponse,
     LlmConfigResponse,
     LlmModelOption,
+    ScopePreviewResponse,
 )
 from app.services.analysis_service import analysis_service
 from app.services.app_logger import log_info, log_success
 from app.services.data_loader import (
     CMM_JOIN_KEYS,
-    DEFAULT_COMPARE_MAPPINGS,
     TABLE_FILES,
     VBAP_JOIN_KEYS,
     all_file_stats,
     build_default_compare_mappings,
-    clear_upload_workspace,
+    clear_data_cache,
     data_store,
     get_compareable_fields,
-    resolve_upload_filename,
+    preview_scope,
     stats_for_file,
+    sync_data_source,
 )
+from app.services.google_drive_sync import is_google_drive_configured
 
 router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
 def health():
-    data_store.load_all()
+    if not data_store._require_reload:
+        data_store.load_all()
     return HealthResponse(
         status="ok",
-        data_dir=str(data_store.data_dir),
+        data_source=settings.data_source,
+        shared_data_dir=str(settings.shared_data_dir),
+        google_drive_folder_id=settings.google_drive_folder_id or None,
+        google_drive_configured=is_google_drive_configured(),
         tables_loaded=data_store.loaded_tables(),
     )
 
@@ -64,7 +67,8 @@ def llm_config():
 @router.get("/data/compare-fields", response_model=CompareFieldsResponse)
 def compare_fields():
     """List compareable columns from VBAP and CMM_VLOGP CSVs plus default mappings."""
-    data_store.load_all()
+    if not data_store._require_reload:
+        data_store.load_all()
     defaults = [AttributeMapping(**m) for m in build_default_compare_mappings()]
     return CompareFieldsResponse(
         vbap_fields=get_compareable_fields("VBAP"),
@@ -73,6 +77,73 @@ def compare_fields():
         cmm_join_keys=sorted(CMM_JOIN_KEYS),
         default_mappings=defaults,
     )
+
+
+@router.get("/data/scope-preview", response_model=ScopePreviewResponse)
+def scope_preview(
+    mode: str = Query("vbeln", description="vbeln | erdat"),
+    vbelns: Optional[str] = Query(None, description="Comma-separated VBELN values"),
+    erdat: Optional[str] = Query(None, description="SAP ERDAT (YYYYMMDD or ISO date)"),
+):
+    """Preview how many VBAP rows match the selected input scope (shared drive data)."""
+    parsed_vbelns = [v.strip() for v in (vbelns or "").split(",") if v.strip()]
+    preview = preview_scope(
+        data_store.get("VBAP"),
+        mode=mode,
+        vbelns=parsed_vbelns if mode == "vbeln" else None,
+        erdat=erdat if mode == "erdat" else None,
+    )
+    return ScopePreviewResponse(**preview)
+
+
+@router.post("/data/reload")
+def reload_shared_data():
+    """Reload SAP CSVs — syncs from Google Drive when DATA_SOURCE=google_drive."""
+    log_info(
+        "api",
+        f"POST /api/data/reload — source={settings.data_source}, cache={settings.shared_data_dir}",
+    )
+    try:
+        sync_info = sync_data_source()
+        data_store._require_reload = False
+        data_store._tables.clear()
+        data_store.load_all()
+        tables = data_store.loaded_tables()
+        log_success(
+            "api",
+            f"Data reload — tables: {', '.join(tables) or 'none'}",
+            detail=sync_info.get("message"),
+        )
+        return {
+            "message": sync_info.get("message") or "Data reloaded",
+            "data_source": settings.data_source,
+            "shared_data_dir": str(settings.shared_data_dir),
+            "google_drive_folder_id": settings.google_drive_folder_id or None,
+            "sync": sync_info,
+            "tables_loaded": tables,
+            "file_stats": [stats_for_file(t, fn) for t, fn in TABLE_FILES.items()],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/session/reset")
+def reset_session():
+    """Clear analysis session, in-memory cache, and Google Drive download cache."""
+    log_info("api", "POST /api/session/reset")
+    try:
+        cache_info = clear_data_cache()
+        analysis_service.reset_session()
+        return {
+            "message": cache_info.get("message", "Session reset"),
+            "data_source": settings.data_source,
+            "shared_data_dir": str(settings.shared_data_dir),
+            "cache": cache_info,
+            "tables_loaded": data_store.loaded_tables(),
+            "file_stats": [stats_for_file(t, fn) for t, fn in TABLE_FILES.items()],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/analyze", response_model=AnalysisResult)
@@ -86,16 +157,25 @@ def analyze(
         ai_flag = use_ai
         llm_model: Optional[str] = None
         gen_pdf = True
+        scope_mode = "vbeln"
+        scope_vbelns: Optional[List[str]] = None
+        scope_erdat: Optional[str] = None
         if body:
             mappings = body.compare_mappings or None
             ai_flag = body.use_ai
             llm_model = body.llm_model
             gen_pdf = body.generate_pdf
+            scope_mode = body.scope_mode or "vbeln"
+            scope_vbelns = body.scope_vbelns or None
+            scope_erdat = body.scope_erdat
         result = analysis_service.run_analysis(
             use_ai=ai_flag,
             compare_mappings=mappings,
             llm_model=llm_model,
             generate_pdf=gen_pdf,
+            scope_mode=scope_mode,
+            scope_vbelns=scope_vbelns,
+            scope_erdat=scope_erdat,
         )
         log_success(
             "api",
@@ -126,91 +206,17 @@ def download_pdf():
 
 @router.get("/data/file-stats", response_model=FileStatsResponse)
 def file_stats():
-    """Per-file row/column statistics for all six SAP table CSVs."""
-    data_store.load_all()
+    """Per-file row/column statistics for SAP table CSVs on disk."""
     return FileStatsResponse(
         files=[FileUploadStats(**s) for s in all_file_stats()]
     )
-
-
-@router.post("/data/upload")
-async def upload_csv(files: list[UploadFile] = File(...)):
-    """Upload one or more SAP table CSVs; merges into persistent upload workspace."""
-    allowed = set(TABLE_FILES.values())
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    uploaded: list[str] = []
-    file_stats: list[dict] = []
-
-    log_info("api", f"POST /api/data/upload — {len(files)} file(s)")
-    try:
-        for f in files:
-            if not f.filename or not f.filename.lower().endswith(".csv"):
-                continue
-            name = resolve_upload_filename(f.filename)
-            if not name:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unexpected file '{f.filename}'. "
-                        "Name exports to start with the table (e.g. VBAP_*.csv) "
-                        f"or use: {sorted(allowed)}"
-                    ),
-                )
-            dest = settings.upload_dir / name
-            with dest.open("wb") as out:
-                shutil.copyfileobj(f.file, out)
-            uploaded.append(name)
-            table = next(t for t, fn in TABLE_FILES.items() if fn == name)
-            file_stats.append(stats_for_file(table, name))
-
-        if not uploaded:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No valid CSV files. Expected one of: {sorted(allowed)}",
-            )
-
-        data_store.load_all()
-        log_success(
-            "api",
-            f"Upload complete — {', '.join(uploaded)}",
-            detail=f"tables={data_store.loaded_tables()}",
-        )
-        return {
-            "message": "Data uploaded successfully",
-            "files": uploaded,
-            "tables_loaded": data_store.loaded_tables(),
-            "file_stats": file_stats,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.delete("/data/uploads")
-def delete_uploads():
-    """Delete all uploaded CSV files and clear in-memory analysis data."""
-    log_info("api", "DELETE /api/data/uploads — clearing upload workspace")
-    try:
-        deleted = clear_upload_workspace()
-        analysis_service.reset_session()
-        log_success(
-            "api",
-            f"Upload workspace cleared — {len(deleted)} file(s) removed",
-            detail=", ".join(deleted) if deleted else "no files on disk",
-        )
-        return {
-            "message": "Uploaded files deleted",
-            "deleted": deleted,
-            "tables_loaded": data_store.loaded_tables(),
-            "file_stats": [stats_for_file(t, fn) for t, fn in TABLE_FILES.items()],
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/data/tables")
 def list_tables():
     data_store.load_all()
     counts = {table: len(data_store.get(table)) for table in TABLE_FILES}
-    return {"data_dir": str(data_store.data_dir), "row_counts": counts}
+    return {
+        "shared_data_dir": str(settings.shared_data_dir),
+        "row_counts": counts,
+    }

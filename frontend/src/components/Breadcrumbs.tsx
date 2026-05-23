@@ -6,7 +6,7 @@ interface Crumb {
 }
 
 const CRUMBS: Crumb[] = [
-  { id: "upload", label: "Upload files" },
+  { id: "upload", label: "Select data" },
   { id: "mapping", label: "Select attributes" },
   { id: "model", label: "OpenAI model" },
   { id: "progress", label: "Analysis" },

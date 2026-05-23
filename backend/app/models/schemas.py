@@ -46,6 +46,7 @@ class AnalysisSummary(BaseModel):
     executive_summary: str = ""
     root_cause_summary: str = ""
     recommended_actions: List[Dict[str, str]] = Field(default_factory=list)
+    scope_filter: str = ""
 
 
 class ApplicationLogEntry(BaseModel):
@@ -75,7 +76,10 @@ class AnalysisResult(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    data_dir: str
+    data_source: str = "local"
+    shared_data_dir: str
+    google_drive_folder_id: Optional[str] = None
+    google_drive_configured: bool = False
     tables_loaded: List[str]
 
 
@@ -88,6 +92,7 @@ class FileUploadStats(BaseModel):
     columns: List[str] = Field(default_factory=list)
     file_size_bytes: Optional[int] = None
     source: str = "sample"
+    resolved_filename: Optional[str] = None
 
 
 class FileStatsResponse(BaseModel):
@@ -126,3 +131,19 @@ class AnalyzeRequest(BaseModel):
     use_ai: bool = True
     llm_model: Optional[str] = None
     generate_pdf: bool = True
+    scope_mode: str = "vbeln"
+    scope_vbelns: List[str] = Field(default_factory=list)
+    scope_erdat: Optional[str] = None
+
+
+class ScopePreviewResponse(BaseModel):
+    mode: str
+    vbap_loaded: bool
+    has_erdat_column: bool
+    commodity_relevant_total: int
+    matching_rows: int
+    matching_orders: int
+    matched_vbelns: List[str] = Field(default_factory=list)
+    unknown_vbelns: List[str] = Field(default_factory=list)
+    sample_vbelns: List[str] = Field(default_factory=list)
+    message: str = ""

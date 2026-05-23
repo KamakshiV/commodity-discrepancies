@@ -1,11 +1,13 @@
 import type {
   AnalysisResult,
+  AnalysisScope,
   AttributeMapping,
   CompareFieldsResponse,
   FileStatsResponse,
   FileUploadStats,
   HealthResponse,
   LlmConfigResponse,
+  ScopePreviewResponse,
 } from "../types";
 
 /**
@@ -62,11 +64,25 @@ export async function fetchCompareFields(): Promise<CompareFieldsResponse> {
   return res.json();
 }
 
+export async function fetchScopePreview(scope: AnalysisScope): Promise<ScopePreviewResponse> {
+  const params = new URLSearchParams({ mode: scope.mode });
+  if (scope.mode === "vbeln" && scope.vbelns.length) {
+    params.set("vbelns", scope.vbelns.join(","));
+  }
+  if (scope.mode === "erdat" && scope.erdat) {
+    params.set("erdat", scope.erdat);
+  }
+  const res = await fetch(`${API}/data/scope-preview?${params}`);
+  if (!res.ok) throw new Error("Failed to preview data scope");
+  return res.json();
+}
+
 export async function runAnalysis(
   useAi: boolean,
   compareMappings: AttributeMapping[],
   llmModel: string,
-  generatePdf: boolean = true
+  generatePdf: boolean = true,
+  scope?: AnalysisScope
 ): Promise<AnalysisResult> {
   const res = await fetch(`${API}/analyze?use_ai=${useAi}`, {
     method: "POST",
@@ -76,6 +92,9 @@ export async function runAnalysis(
       llm_model: llmModel,
       generate_pdf: generatePdf,
       compare_mappings: compareMappings.filter((m) => m.enabled),
+      scope_mode: scope?.mode ?? "vbeln",
+      scope_vbelns: scope?.mode === "vbeln" ? scope.vbelns : [],
+      scope_erdat: scope?.mode === "erdat" ? scope.erdat || null : null,
     }),
   });
   if (!res.ok) {
@@ -90,35 +109,30 @@ export async function fetchFileStats(): Promise<FileStatsResponse> {
   return res.json();
 }
 
-export async function clearUploadedFiles(): Promise<{
+export async function reloadSharedData(): Promise<{
   message: string;
-  deleted: string[];
+  shared_data_dir: string;
+  tables_loaded: string[];
   file_stats: FileUploadStats[];
 }> {
-  const res = await fetch(`${API}/data/uploads`, { method: "DELETE" });
+  const res = await fetch(`${API}/data/reload`, { method: "POST" });
   if (!res.ok) {
-    throw new Error(await parseErrorDetail(res, "Failed to clear uploads"));
+    throw new Error(await parseErrorDetail(res, "Failed to reload shared drive data"));
   }
   return res.json();
 }
 
-export async function uploadCsvFiles(
-  files: File[]
-): Promise<{ message: string; file_stats: FileUploadStats[]; tables_loaded: string[] }> {
-  const form = new FormData();
-  for (const file of files) {
-    form.append("files", file);
-  }
-  const res = await fetch(`${API}/data/upload`, { method: "POST", body: form });
+export async function resetSession(): Promise<{
+  message: string;
+  shared_data_dir: string;
+  tables_loaded: string[];
+  file_stats: FileUploadStats[];
+}> {
+  const res = await fetch(`${API}/session/reset`, { method: "POST" });
   if (!res.ok) {
-    throw new Error(await parseErrorDetail(res, "Upload failed"));
+    throw new Error(await parseErrorDetail(res, "Failed to reset session"));
   }
   return res.json();
-}
-
-/** @deprecated Use uploadCsvFiles */
-export async function uploadCsvFile(file: File) {
-  return uploadCsvFiles([file]);
 }
 
 export function pdfDownloadUrl(): string {

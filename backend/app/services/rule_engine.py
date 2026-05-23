@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, List, Optional
 
 import pandas as pd
 
@@ -7,8 +7,7 @@ from app.services.data_loader import (
     COMMODITY_FILTER_COLUMN,
     DEFAULT_COMPARE_MAPPINGS,
     DataStore,
-    count_commodity_relevant,
-    filter_commodity_relevant,
+    filter_vbap_scope,
     mappings_to_tuples,
 )
 from app.services.change_document_research import research_vbep_changes_for_vbeln
@@ -42,10 +41,28 @@ def _extract_vbap_line_fields(vbap_row: pd.Series) -> dict[str, str]:
 class RuleEngine:
     """Deterministic discrepancy detection — AI must not override these results."""
 
-    def __init__(self, store: DataStore, compare_mappings: list = None):
+    def __init__(
+        self,
+        store: DataStore,
+        compare_mappings: list = None,
+        scope_vbelns: Optional[List[str]] = None,
+        scope_erdat: Optional[str] = None,
+    ):
         self.store = store
         raw = compare_mappings if compare_mappings is not None else DEFAULT_COMPARE_MAPPINGS
         self.compare_attributes = mappings_to_tuples(raw)
+        self.scope_vbelns = scope_vbelns
+        self.scope_erdat = scope_erdat
+
+    def _scoped_commodity(self) -> pd.DataFrame:
+        vbap = self.store.get("VBAP")
+        if vbap.empty:
+            return vbap
+        return filter_vbap_scope(
+            vbap,
+            vbelns=self.scope_vbelns if self.scope_vbelns else None,
+            erdat=self.scope_erdat,
+        )
 
     def run(self) -> list[DiscrepancyRecord]:
         vbap = self.store.get("VBAP")
@@ -54,7 +71,7 @@ class RuleEngine:
         if vbap.empty:
             return []
 
-        commodity = filter_commodity_relevant(vbap)
+        commodity = self._scoped_commodity()
         results: list[DiscrepancyRecord] = []
         join_exclude = {"VBELN", "POSNR", COMMODITY_FILTER_COLUMN}
 
@@ -195,5 +212,4 @@ class RuleEngine:
         )
 
     def count_commodity_relevant(self) -> int:
-        vbap = self.store.get("VBAP")
-        return count_commodity_relevant(vbap)
+        return len(self._scoped_commodity())
