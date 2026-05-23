@@ -46,7 +46,7 @@ const INPUT_METHODS: {
   {
     id: "erdat",
     title: "Creation date (ERDAT)",
-    subtitle: "Filter by VBAP.ERDAT",
+    subtitle: "Filter by VBAP.ERDAT date range",
     icon: "📅",
   },
 ];
@@ -61,10 +61,12 @@ interface Props {
   reloading: boolean;
   inputMode: DataInputMode;
   vbelns: string[];
-  erdat: string;
+  erdatFrom: string;
+  erdatTo: string;
   onInputModeChange: (mode: DataInputMode) => void;
   onVbelnsChange: (vbelns: string[]) => void;
-  onErdatChange: (erdat: string) => void;
+  onErdatFromChange: (erdat: string) => void;
+  onErdatToChange: (erdat: string) => void;
   onReload: () => void;
   onContinue: () => void;
 }
@@ -85,17 +87,24 @@ export default function DataInputPanel({
   reloading,
   inputMode,
   vbelns,
-  erdat,
+  erdatFrom,
+  erdatTo,
   onInputModeChange,
   onVbelnsChange,
-  onErdatChange,
+  onErdatFromChange,
+  onErdatToChange,
   onReload,
   onContinue,
 }: Props) {
   const [vbelnDraft, setVbelnDraft] = useState("");
   const [preview, setPreview] = useState<ScopePreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [showDataFiles, setShowDataFiles] = useState(true);
+
+  const hasErdatRange = !!(erdatFrom || erdatTo);
+  const erdatRangeInvalid =
+    !!erdatFrom &&
+    !!erdatTo &&
+    erdatFrom > erdatTo;
 
   const rows = EXPECTED_UPLOAD_FILES.map((expected, idx) => ({
     ...expected,
@@ -118,10 +127,10 @@ export default function DataInputPanel({
       return vbelns.length > 0 && (preview?.matching_rows ?? 0) > 0;
     }
     if (inputMode === "erdat") {
-      return !!erdat && (preview?.matching_rows ?? 0) > 0;
+      return hasErdatRange && !erdatRangeInvalid && (preview?.matching_rows ?? 0) > 0;
     }
     return false;
-  }, [allOnDisk, dataReady, inputMode, vbelns, erdat, preview]);
+  }, [allOnDisk, dataReady, inputMode, vbelns, erdatFrom, erdatTo, erdatRangeInvalid, hasErdatRange, preview]);
 
   useEffect(() => {
     if (!dataReady) {
@@ -134,7 +143,8 @@ export default function DataInputPanel({
         const result = await fetchScopePreview({
           mode: inputMode,
           vbelns,
-          erdat,
+          erdatFrom,
+          erdatTo,
         });
         setPreview(result);
       } catch {
@@ -144,7 +154,7 @@ export default function DataInputPanel({
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [inputMode, vbelns, erdat, filesOnDiskCount, dataReady]);
+  }, [inputMode, vbelns, erdatFrom, erdatTo, filesOnDiskCount, dataReady]);
 
   const addVbelnFromDraft = () => {
     const next = parseVbelnInput(vbelnDraft);
@@ -342,35 +352,49 @@ export default function DataInputPanel({
 
         {inputMode === "erdat" && (
           <div className="erdat-input-panel">
-            <label className="erdat-input-label" htmlFor="erdat-picker">
-              VBAP.ERDAT — order creation date
-            </label>
+            <label className="erdat-input-label">VBAP.ERDAT — creation date range</label>
             <p className="erdat-input-hint">
-              Select the SAP creation date to filter rows from the shared drive VBAP
-              export (stored as YYYYMMDD).
+              Filter VBAP rows by order creation date. Set one or both bounds.
             </p>
-            <div className="erdat-picker-row">
-              <input
-                id="erdat-picker"
-                type="date"
-                className="erdat-date-input"
-                value={sapErdatToIso(erdat)}
-                onChange={(e) => onErdatChange(isoToSapErdat(e.target.value))}
-              />
-              {erdat && (
-                <span className="erdat-sap-display">
-                  SAP format: <code>{erdat}</code>
-                </span>
-              )}
+            <div className="erdat-range-row">
+              <label className="erdat-range-field" htmlFor="erdat-from">
+                <span className="erdat-range-label">From</span>
+                <input
+                  id="erdat-from"
+                  type="date"
+                  className="erdat-date-input"
+                  value={sapErdatToIso(erdatFrom)}
+                  onChange={(e) => onErdatFromChange(isoToSapErdat(e.target.value))}
+                />
+              </label>
+              <span className="erdat-range-sep" aria-hidden>
+                →
+              </span>
+              <label className="erdat-range-field" htmlFor="erdat-to">
+                <span className="erdat-range-label">To</span>
+                <input
+                  id="erdat-to"
+                  type="date"
+                  className="erdat-date-input"
+                  value={sapErdatToIso(erdatTo)}
+                  onChange={(e) => onErdatToChange(isoToSapErdat(e.target.value))}
+                />
+              </label>
               <button
                 type="button"
                 className="btn btn-outline btn-sm"
-                onClick={() => onErdatChange("")}
-                disabled={!erdat}
+                onClick={() => {
+                  onErdatFromChange("");
+                  onErdatToChange("");
+                }}
+                disabled={!hasErdatRange}
               >
                 Clear
               </button>
             </div>
+            {erdatRangeInvalid && (
+              <p className="input-mode-note warn">Start date must be on or before end date.</p>
+            )}
             {!preview?.has_erdat_column && vbapInMemory && (
               <p className="input-mode-note warn">
                 Shared drive <code>vbap.csv</code> has no ERDAT column.
@@ -420,13 +444,7 @@ export default function DataInputPanel({
       </div>
 
       <div className="upload-data-section">
-        <button
-          type="button"
-          className="upload-data-toggle"
-          onClick={() => setShowDataFiles((v) => !v)}
-          aria-expanded={showDataFiles}
-          aria-controls="data-files-panel"
-        >
+        <div className="upload-data-heading">
           <span className="shared-files-heading">
             Data files ({memoryLoadedCount}/{EXPECTED_UPLOAD_FILES.length})
             {!dataReady && allOnDisk && (
@@ -436,12 +454,8 @@ export default function DataInputPanel({
               <span className="upload-data-toggle-hint"> — {missingFiles.length} missing</span>
             )}
           </span>
-          <span className="upload-data-chevron" aria-hidden>
-            {showDataFiles ? "▾" : "▸"}
-          </span>
-        </button>
-        {showDataFiles && (
-          <div id="data-files-panel" className="upload-table-wrap">
+        </div>
+        <div id="data-files-panel" className="upload-table-wrap">
             <table className="upload-status-table">
             <thead>
               <tr>
@@ -500,8 +514,7 @@ export default function DataInputPanel({
               })}
             </tbody>
           </table>
-          </div>
-        )}
+        </div>
       </div>
     </section>
   );

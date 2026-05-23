@@ -69,8 +69,9 @@ export async function fetchScopePreview(scope: AnalysisScope): Promise<ScopePrev
   if (scope.mode === "vbeln" && scope.vbelns.length) {
     params.set("vbelns", scope.vbelns.join(","));
   }
-  if (scope.mode === "erdat" && scope.erdat) {
-    params.set("erdat", scope.erdat);
+  if (scope.mode === "erdat") {
+    if (scope.erdatFrom) params.set("erdat_from", scope.erdatFrom);
+    if (scope.erdatTo) params.set("erdat_to", scope.erdatTo);
   }
   const res = await fetch(`${API}/data/scope-preview?${params}`);
   if (!res.ok) throw new Error("Failed to preview data scope");
@@ -94,7 +95,8 @@ export async function runAnalysis(
       compare_mappings: compareMappings.filter((m) => m.enabled),
       scope_mode: scope?.mode ?? "vbeln",
       scope_vbelns: scope?.mode === "vbeln" ? scope.vbelns : [],
-      scope_erdat: scope?.mode === "erdat" ? scope.erdat || null : null,
+      scope_erdat_from: scope?.mode === "erdat" ? scope.erdatFrom || null : null,
+      scope_erdat_to: scope?.mode === "erdat" ? scope.erdatTo || null : null,
     }),
   });
   if (!res.ok) {

@@ -99,8 +99,10 @@ def filter_vbap_scope(
     *,
     vbelns: Optional[List[str]] = None,
     erdat: Optional[str] = None,
+    erdat_from: Optional[str] = None,
+    erdat_to: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Apply commodity filter plus optional VBELN list or ERDAT scope."""
+    """Apply commodity filter plus optional VBELN list or ERDAT (single day or range)."""
     df = filter_commodity_relevant(vbap)
     if df.empty:
         return df
@@ -112,12 +114,25 @@ def filter_vbap_scope(
                 df["VBELN"].apply(lambda x: canonical_document_key(x) in targets)
             ].copy()
 
-    if erdat:
-        target_date = normalize_erdat(erdat)
-        if target_date and "ERDAT" in df.columns:
-            df = df[
-                df["ERDAT"].apply(lambda x: normalize_erdat(x) == target_date)
-            ].copy()
+    start = normalize_erdat(erdat_from or "")
+    end = normalize_erdat(erdat_to or "")
+    if erdat and not start and not end:
+        start = normalize_erdat(erdat)
+        end = start
+
+    if (start or end) and "ERDAT" in df.columns:
+
+        def in_erdat_range(val) -> bool:
+            day = normalize_erdat(val)
+            if not day:
+                return False
+            if start and day < start:
+                return False
+            if end and day > end:
+                return False
+            return True
+
+        df = df[df["ERDAT"].apply(in_erdat_range)].copy()
 
     return df
 
@@ -128,6 +143,8 @@ def preview_scope(
     mode: str = "vbeln",
     vbelns: Optional[List[str]] = None,
     erdat: Optional[str] = None,
+    erdat_from: Optional[str] = None,
+    erdat_to: Optional[str] = None,
 ) -> dict:
     """Return row/order counts for UI scope preview."""
     commodity = filter_commodity_relevant(vbap)
@@ -180,8 +197,12 @@ def preview_scope(
         }
 
     if mode == "erdat":
-        target = normalize_erdat(erdat or "")
-        if not target:
+        start = normalize_erdat(erdat_from or "")
+        end = normalize_erdat(erdat_to or "")
+        if erdat and not start and not end:
+            start = normalize_erdat(erdat)
+            end = start
+        if not start and not end:
             return {
                 "mode": mode,
                 "vbap_loaded": vbap_loaded,
@@ -192,7 +213,7 @@ def preview_scope(
                 "matched_vbelns": [],
                 "unknown_vbelns": [],
                 "sample_vbelns": _sample_vbelns(commodity),
-                "message": "Select a creation date (ERDAT).",
+                "message": "Select a start date, end date, or both.",
             }
         if not has_erdat:
             return {
@@ -207,7 +228,8 @@ def preview_scope(
                 "sample_vbelns": _sample_vbelns(commodity),
                 "message": "VBAP has no ERDAT column in the shared drive export.",
             }
-        scoped = filter_vbap_scope(vbap, erdat=target)
+        scoped = filter_vbap_scope(vbap, erdat_from=start or None, erdat_to=end or None)
+        range_label = _format_erdat_range_label(start, end)
         return {
             "mode": mode,
             "vbap_loaded": vbap_loaded,
@@ -219,9 +241,9 @@ def preview_scope(
             "unknown_vbelns": [],
             "sample_vbelns": _sample_vbelns(commodity),
             "message": (
-                f"{len(scoped)} line(s) on ERDAT {target}"
+                f"{len(scoped)} line(s) for ERDAT {range_label}"
                 if not scoped.empty
-                else f"No commodity-relevant VBAP rows for ERDAT {target}."
+                else f"No commodity-relevant VBAP rows for ERDAT {range_label}."
             ),
         }
 
@@ -255,16 +277,33 @@ def _sample_vbelns(vbap: pd.DataFrame, limit: int = 5) -> List[str]:
     return samples
 
 
+def _format_erdat_range_label(start: str, end: str) -> str:
+    if start and end:
+        if start == end:
+            return start
+        return f"{start} – {end}"
+    if start:
+        return f"from {start}"
+    return f"through {end}"
+
+
 def build_scope_label(
     mode: str,
     vbelns: Optional[List[str]] = None,
     erdat: Optional[str] = None,
+    erdat_from: Optional[str] = None,
+    erdat_to: Optional[str] = None,
 ) -> str:
     if mode == "vbeln" and vbelns:
         shown = ", ".join(norm(v) for v in vbelns if norm(v))
         return f"Scoped to VBAP.VBELN: {shown}"
-    if mode == "erdat" and erdat:
-        return f"Scoped to VBAP.ERDAT: {normalize_erdat(erdat)}"
+    start = normalize_erdat(erdat_from or "")
+    end = normalize_erdat(erdat_to or "")
+    if erdat and not start and not end:
+        start = normalize_erdat(erdat)
+        end = start
+    if mode == "erdat" and (start or end):
+        return f"Scoped to VBAP.ERDAT: {_format_erdat_range_label(start, end)}"
     return "VBAP scope not specified"
 
 

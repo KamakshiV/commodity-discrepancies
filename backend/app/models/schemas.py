@@ -134,6 +134,8 @@ class AnalyzeRequest(BaseModel):
     scope_mode: str = "vbeln"
     scope_vbelns: List[str] = Field(default_factory=list)
     scope_erdat: Optional[str] = None
+    scope_erdat_from: Optional[str] = None
+    scope_erdat_to: Optional[str] = None
 
 
 class ScopePreviewResponse(BaseModel):

@@ -111,7 +111,8 @@ export type DataInputMode = "vbeln" | "erdat";
 export interface AnalysisScope {
   mode: DataInputMode;
   vbelns: string[];
-  erdat: string;
+  erdatFrom: string;
+  erdatTo: string;
 }
 
 export interface ScopePreviewResponse {

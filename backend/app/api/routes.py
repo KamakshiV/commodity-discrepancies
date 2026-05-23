@@ -83,7 +83,9 @@ def compare_fields():
 def scope_preview(
     mode: str = Query("vbeln", description="vbeln | erdat"),
     vbelns: Optional[str] = Query(None, description="Comma-separated VBELN values"),
-    erdat: Optional[str] = Query(None, description="SAP ERDAT (YYYYMMDD or ISO date)"),
+    erdat: Optional[str] = Query(None, description="Legacy single ERDAT (YYYYMMDD or ISO date)"),
+    erdat_from: Optional[str] = Query(None, description="ERDAT range start (YYYYMMDD or ISO date)"),
+    erdat_to: Optional[str] = Query(None, description="ERDAT range end (YYYYMMDD or ISO date)"),
 ):
     """Preview how many VBAP rows match the selected input scope (shared drive data)."""
     parsed_vbelns = [v.strip() for v in (vbelns or "").split(",") if v.strip()]
@@ -92,6 +94,8 @@ def scope_preview(
         mode=mode,
         vbelns=parsed_vbelns if mode == "vbeln" else None,
         erdat=erdat if mode == "erdat" else None,
+        erdat_from=erdat_from if mode == "erdat" else None,
+        erdat_to=erdat_to if mode == "erdat" else None,
     )
     return ScopePreviewResponse(**preview)
 
@@ -160,6 +164,8 @@ def analyze(
         scope_mode = "vbeln"
         scope_vbelns: Optional[List[str]] = None
         scope_erdat: Optional[str] = None
+        scope_erdat_from: Optional[str] = None
+        scope_erdat_to: Optional[str] = None
         if body:
             mappings = body.compare_mappings or None
             ai_flag = body.use_ai
@@ -168,6 +174,8 @@ def analyze(
             scope_mode = body.scope_mode or "vbeln"
             scope_vbelns = body.scope_vbelns or None
             scope_erdat = body.scope_erdat
+            scope_erdat_from = body.scope_erdat_from
+            scope_erdat_to = body.scope_erdat_to
         result = analysis_service.run_analysis(
             use_ai=ai_flag,
             compare_mappings=mappings,
@@ -176,6 +184,8 @@ def analyze(
             scope_mode=scope_mode,
             scope_vbelns=scope_vbelns,
             scope_erdat=scope_erdat,
+            scope_erdat_from=scope_erdat_from,
+            scope_erdat_to=scope_erdat_to,
         )
         log_success(
             "api",

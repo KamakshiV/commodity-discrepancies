@@ -47,12 +47,16 @@ class RuleEngine:
         compare_mappings: list = None,
         scope_vbelns: Optional[List[str]] = None,
         scope_erdat: Optional[str] = None,
+        scope_erdat_from: Optional[str] = None,
+        scope_erdat_to: Optional[str] = None,
     ):
         self.store = store
         raw = compare_mappings if compare_mappings is not None else DEFAULT_COMPARE_MAPPINGS
         self.compare_attributes = mappings_to_tuples(raw)
         self.scope_vbelns = scope_vbelns
         self.scope_erdat = scope_erdat
+        self.scope_erdat_from = scope_erdat_from
+        self.scope_erdat_to = scope_erdat_to
 
     def _scoped_commodity(self) -> pd.DataFrame:
         vbap = self.store.get("VBAP")
@@ -62,6 +66,8 @@ class RuleEngine:
             vbap,
             vbelns=self.scope_vbelns if self.scope_vbelns else None,
             erdat=self.scope_erdat,
+            erdat_from=self.scope_erdat_from,
+            erdat_to=self.scope_erdat_to,
         )
 
     def run(self) -> list[DiscrepancyRecord]:
@@ -203,7 +209,7 @@ class RuleEngine:
         return result
 
     def _research_changes(self, vbeln: str, posnr: str) -> list[dict[str, Any]]:
-        """Scenario 2: CDHDR (by VBELN→OBJECTID) → CDPOS join, TABNAME=VBEP."""
+        """Scenario 2: CDHDR (by VBELN→OBJECTID) → CDPOS join."""
         return research_vbep_changes_for_vbeln(
             vbeln,
             self.store.get("CDHDR"),

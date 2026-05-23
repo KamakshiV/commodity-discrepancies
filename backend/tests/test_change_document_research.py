@@ -40,10 +40,11 @@ def test_vbep_change_join_with_objectclas_alias():
 
     changes = research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos, posnr="000010")
 
-    assert len(changes) == 1
-    ch = changes[0]
-    assert ch["TABNAME"] == "VBEP"
-    assert ch["FNAME"] == "BMENG"
+    assert len(changes) == 2
+    tabnames = {ch["TABNAME"] for ch in changes}
+    assert tabnames == {"VBEP", "VBAP"}
+    vbep = next(ch for ch in changes if ch["TABNAME"] == "VBEP")
+    assert vbep["FNAME"] == "BMENG"
 
 
 def test_cdpos_objectid_may_differ_from_cdhdr_vbeln():

@@ -67,10 +67,10 @@ body {
 
 .hero-subtitle {
   margin: 0.5rem 0 0;
-  max-width: 32rem;
   color: var(--muted);
   font-size: 0.95rem;
   line-height: 1.5;
+  white-space: nowrap;
 }
 
 .hero-status {
@@ -877,11 +877,42 @@ body {
   background: var(--accent-light);
 }
 
-.erdat-picker-row {
+.erdat-picker-row,
+.erdat-range-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.75rem;
+}
+
+.erdat-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.erdat-range-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.erdat-range-sep {
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding-bottom: 0.65rem;
+}
+
+.upload-data-heading {
+  margin-bottom: 0.75rem;
+}
+
+.upload-data-heading .shared-files-heading {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .erdat-date-input {
@@ -1040,9 +1071,9 @@ body {
 }
 
 .upload-data-section .upload-table-wrap {
-  border-top: none;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
   margin-top: 0;
 }
 
@@ -2702,6 +2733,11 @@ body {
 
   .hero {
     padding: 1.5rem 1.25rem 0.5rem;
+  }
+
+  .hero-subtitle {
+    white-space: normal;
+    font-size: 0.88rem;
   }
 
   .app {

@@ -5,7 +5,7 @@ For a VBAP line (VBELN + POSNR) with attribute differences vs CMM_VLOGP:
 1. Match VBAP.VBELN to CDHDR.OBJECTID
 2. From CDHDR take CHANGENR, OBJECTID, OBJECTCLASS (or SAP alias OBJECTCLAS)
 3. Join CDPOS on CHANGENR, OBJECTID, OBJECTCLASS
-4. Keep CDPOS rows where TABNAME = 'VBEP'
+4. Return all matching CDPOS rows (all TABNAME values)
 5. Return TABNAME, FNAME, VALUE_NEW, VALUE_OLD plus CDHDR keys
 """
 
@@ -18,7 +18,6 @@ import pandas as pd
 from app.services.field_compare import canonical_document_key, norm
 
 OBJECTCLASS_COLUMNS = ("OBJECTCLASS", "OBJECTCLAS")
-VBEP_TABNAME = "VBEP"
 
 
 def _resolve_column(df: pd.DataFrame, *candidates: str) -> Optional[str]:
@@ -59,16 +58,12 @@ def _cdpos_for_cdhdr_header(
     changenr: str,
     objectclass: str,
     oc_pos_col: str,
-    *,
-    include_vbap_fallback: bool = True,
 ) -> pd.DataFrame:
     """
     Join CDPOS to a CDHDR header row.
 
     SAP often stores VBELN in CDHDR.OBJECTID but an internal object id in
     CDPOS.OBJECTID for the same CHANGENR. Join on CHANGENR + OBJECTCLASS only.
-    Prefer TABNAME=VBEP; include VBAP when no VBEP lines exist (common for
-    VBAP attribute changes in customer extracts).
     """
     if cdpos.empty:
         return cdpos.iloc[0:0]
@@ -77,20 +72,7 @@ def _cdpos_for_cdhdr_header(
         (cdpos["CHANGENR"].astype(str).str.strip() == changenr)
         & (cdpos[oc_pos_col].astype(str).str.strip() == objectclass)
     ]
-    if base.empty:
-        return base
-
-    tab = base["TABNAME"].astype(str).str.strip().str.upper()
-    vbep = base[tab == VBEP_TABNAME]
-    if not vbep.empty:
-        return vbep
-
-    if include_vbap_fallback:
-        vbap = base[tab == "VBAP"]
-        if not vbap.empty:
-            return vbap
-
-    return base.iloc[0:0]
+    return base
 
 
 def research_vbep_changes_for_vbeln(
@@ -103,8 +85,7 @@ def research_vbep_changes_for_vbeln(
     """
     Run Scenario 2 change-document research for one sales order item.
 
-    posnr is recorded on each change row for traceability; CDPOS filtering uses TABNAME=VBEP
-    per specification (not POSNR on TABKEY).
+    posnr is recorded on each change row for traceability.
     """
     changes: List[Dict[str, Any]] = []
     headers = _match_cdhdr_by_vbeln(cdhdr, vbeln)

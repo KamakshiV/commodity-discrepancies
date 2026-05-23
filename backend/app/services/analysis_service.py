@@ -42,13 +42,21 @@ class AnalysisService:
         scope_mode: str = "vbeln",
         scope_vbelns: Optional[List[str]] = None,
         scope_erdat: Optional[str] = None,
+        scope_erdat_from: Optional[str] = None,
+        scope_erdat_to: Optional[str] = None,
     ) -> AnalysisResult:
         global _last_result, _pdf_cache, _last_compare_mappings, _last_llm_model
 
         begin_analysis_logs()
         _last_llm_model = _resolve_model(llm_model)
 
-        scope_label = build_scope_label(scope_mode, scope_vbelns, scope_erdat)
+        scope_label = build_scope_label(
+            scope_mode,
+            scope_vbelns,
+            scope_erdat,
+            scope_erdat_from,
+            scope_erdat_to,
+        )
         log_info(
             "analysis",
             "Analysis run started",
@@ -97,6 +105,8 @@ class AnalysisService:
                 compare_mappings=_last_compare_mappings,
                 scope_vbelns=scope_vbelns if scope_mode == "vbeln" else None,
                 scope_erdat=scope_erdat if scope_mode == "erdat" else None,
+                scope_erdat_from=scope_erdat_from if scope_mode == "erdat" else None,
+                scope_erdat_to=scope_erdat_to if scope_mode == "erdat" else None,
             )
             total = engine.count_commodity_relevant()
             discrepancies = engine.run()

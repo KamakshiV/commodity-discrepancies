@@ -227,7 +227,7 @@ export default function ResultsDashboard({ result }: Props) {
                         )}
                         {d.change_history?.length > 0 && (
                           <div className="detail-block">
-                            <h4>Change history (CDHDR → CDPOS, TABNAME=VBEP)</h4>
+                            <h4>Change history (CDHDR → CDPOS)</h4>
                             <table className="change-history-table">
                               <thead>
                                 <tr>

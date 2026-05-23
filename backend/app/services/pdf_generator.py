@@ -273,7 +273,7 @@ class PDFGenerator:
             story.append(
                 Paragraph(
                     "For each order line: mismatched attributes are listed, then CDHDR/CDPOS "
-                    "change history (VBEP preferred, VBAP when no VBEP rows exist).",
+                    "change history for the sales order.",
                     self._small,
                 )
             )
@@ -317,7 +317,7 @@ class PDFGenerator:
                 "1. Resolve <b>Missing in CMM_VLOGP</b> items first — check qRFC errors and "
                 "reprocess failed queues.<br/>"
                 "2. For <b>Attribute mismatch</b> items, compare the field values listed and "
-                "validate CDPOS change history on VBEP.<br/>"
+                "validate CDPOS change history for the order line.<br/>"
                 "3. Use the Action Plan owners (SAP Basis, Commodity team, Functional analyst) "
                 "to route each fix.",
                 self._body,
@@ -412,7 +412,7 @@ class PDFGenerator:
         if d.change_history:
             blocks.append(
                 Paragraph(
-                    "CHANGE HISTORY (CDHDR → CDPOS, TABNAME=VBEP)",
+                    "CHANGE HISTORY (CDHDR → CDPOS)",
                     self._detail_label,
                 )
             )

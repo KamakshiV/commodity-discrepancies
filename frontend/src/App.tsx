@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import AppFooter from "./components/AppFooter";
 import AnalysisProgressPanel from "./components/AnalysisProgressPanel";
 import AttributeMappingPanel, {
@@ -62,7 +62,8 @@ export default function App() {
   const [maxReachableStep, setMaxReachableStep] = useState<AppStep>("upload");
   const [inputMode, setInputMode] = useState<DataInputMode>("vbeln");
   const [scopeVbelns, setScopeVbelns] = useState<string[]>([]);
-  const [scopeErdat, setScopeErdat] = useState("");
+  const [scopeErdatFrom, setScopeErdatFrom] = useState("");
+  const [scopeErdatTo, setScopeErdatTo] = useState("");
 
   const activeMappings = mappings.filter((m) => m.enabled && m.vbap_field && m.cmm_field);
   const allFilesLoaded = EXPECTED_UPLOAD_FILES.every(
@@ -158,8 +159,6 @@ export default function App() {
     }
   }, [result]);
 
-  const tableChips = useMemo(() => health?.tables_loaded ?? [], [health]);
-
   const handleMappingsChange = (next: AttributeMapping[]) => {
     setMappings(next);
     saveMappings(next);
@@ -187,7 +186,8 @@ export default function App() {
       const data = await runAnalysis(useAi, mappings, llmModel, true, {
         mode: inputMode,
         vbelns: scopeVbelns,
-        erdat: scopeErdat,
+        erdatFrom: scopeErdatFrom,
+        erdatTo: scopeErdatTo,
       });
       setResult(data);
       setWorkflowStep("results");
@@ -243,7 +243,8 @@ export default function App() {
     setMaxReachableStep("upload");
     setInputMode("vbeln");
     setScopeVbelns([]);
-    setScopeErdat("");
+    setScopeErdatFrom("");
+    setScopeErdatTo("");
     clearSavedMappings();
 
     try {
@@ -281,24 +282,9 @@ export default function App() {
           <p className="hero-eyebrow">Turiaixis · SAP Commodity Intelligence</p>
           <h1>Commodity Discrepancy Analysis</h1>
           <p className="hero-subtitle">
-            Reconcile VBAP with CMM_VLOGP using deterministic rules, then let AI
-            explain root causes and deliver a PDF report.
+            Reconcile VBAP with CMM_VLOGP using deterministic rules, then let AI explain root causes and deliver a PDF report.
           </p>
         </div>
-        {health && (
-          <div className="hero-status">
-            <span className={`status-pill ${health.status === "ok" ? "ok" : ""}`}>
-              ● {health.status}
-            </span>
-            <div className="table-chips">
-              {tableChips.map((t) => (
-                <span key={t} className="chip chip-table">
-                  {t}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
       </header>
 
       <div className="app">
@@ -349,14 +335,18 @@ export default function App() {
                 reloading={reloading}
                 inputMode={inputMode}
                 vbelns={scopeVbelns}
-                erdat={scopeErdat}
+                erdatFrom={scopeErdatFrom}
+                erdatTo={scopeErdatTo}
                 onInputModeChange={(mode) => {
                   setInputMode(mode);
-                  if (mode === "vbeln") setScopeErdat("");
-                  else setScopeVbelns([]);
+                  if (mode === "vbeln") {
+                    setScopeErdatFrom("");
+                    setScopeErdatTo("");
+                  } else setScopeVbelns([]);
                 }}
                 onVbelnsChange={setScopeVbelns}
-                onErdatChange={setScopeErdat}
+                onErdatFromChange={setScopeErdatFrom}
+                onErdatToChange={setScopeErdatTo}
                 onReload={handleReloadSharedData}
                 onContinue={() => goToStep("mapping")}
               />
