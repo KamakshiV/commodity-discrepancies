@@ -1,0 +1,26 @@
+MESSAGE_ID,MESSAGE_NUMBER,STANDARD_SYSTEM_TEXT,SAP_COMPONENT_AREA,DIAGNOSTIC_TCODE
+00,108,Only &1 decimal places are allowed,BC-ABA (System Messages),OY04 / CUNI
+00,143,Issuer of SSO ticket is not authorized,BC-SEC-SNC (Security),STRUST
+00,170,No logon possible (no hw ID received by mssg server),BC-CST-MS (Message Server),SMMS
+00,201,Exit status unknown (abend),BC-ABA (ABAP Runtime),ST22 / SM37
+00,341,Runtime error & has occurred,BC-ABA (ABAP Runtime),ST22
+00,432,No authorization for user administration,BC-SEC-USR (User Admin),SU53
+00,505,Choose a processing option,BC-ABA (System Messages),SM35
+00,701,rvin: Argument & not in table 182f,BC-ABA (System System),SE16N
+00,750,Special stock: Segment does not exist,LO-MD-MM (Material Master),MIGO / MB1C
+5W,170,Structure &1 &2 &3 &4: No agent found.,BC-BMT-WFM (Workflow),PFAC
+B1,143,No number range defined for change pointers,MID-ALE (IDoc Interfaces),BD21
+CMM_ANALYTICS,201,Insert into table &1 failed,TRM-CM-ANA (Risk Analytics),CMM_MONITOR
+CMM_ANALYTICS,505,Enter valid data,TRM-CM-ANA (Risk Analytics),CMM_MONITOR
+CMM_VLOGP,201,Error while inserting data in table CMM_VLOGP,TRM-CM (Commodity),SM12 / SMQ2
+FTR_COEX,223,Processing commodity saves for financial transaction &1,FIN-FSCM-TRM (Treasury),FTR_COEX
+ME,201,Please choose a valid line,MM-PUR (Purchasing),ME22N
+MM,108,No alternative unit of measure specified,LO-MD-MM (Material Master),MM02
+OPS_SE_PUR_COMMON,108,Inconsistent release information in message header/item,MM-PUR (Purchasing Services),SXI_MONITOR
+R1,201,Business partner &1 does not exist,CA-MDG-APP- BP (Bus. Partner),BP
+SRT_CORE,143,System error during SOAP processing,BC-ESI-WS-ABA (Web Service),SRT_UTIL
+V1,170,Credit user check 1 unsuccessful &1 &2,SD-SLS (Sales Processing),VKM1
+VF,750,"Billing type &1 contains split crit. &2, n invoiced: &3, invoice not req.",SD-BIL (Billing),VF01 / VF02
+CMM_VLOGP,40,Root Document Locked,TRM-CM (Commodity),SM12 / SMQ2
+CMM_VLOGP,45,MtM Pricing Condition Not Active,TRM-CM (Commodity),SM12 / SMQ2
+CMM_VLOGP,29,Pricing Determination Failure,TRM-CM (Commodity),SM12 / SMQ2

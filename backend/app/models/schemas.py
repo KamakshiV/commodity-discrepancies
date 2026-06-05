@@ -24,6 +24,10 @@ class DiscrepancyRecord(BaseModel):
     mismatched_fields: List[str] = Field(default_factory=list)
     qrf_research: Optional[Dict[str, Any]] = None
     change_history: List[Dict[str, Any]] = Field(default_factory=list)
+    cmm_match_path: Optional[str] = Field(
+        None,
+        description="How VBAP matched CMM_VLOGP: direct (DOCUMENT_CHAR10) or predecessor",
+    )
 
 
 class AgentInsight(BaseModel):

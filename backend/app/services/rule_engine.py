@@ -14,6 +14,10 @@ from app.services.data_loader import (
     filter_vbap_scope,
     mappings_to_tuples,
 )
+from app.services.finetuning_message_map import (
+    extract_qrfc_err_state_fields,
+    resolve_finetuning_from_qrfc_err,
+)
 from app.services.field_compare import (
     canonical_document_key,
     canonical_item_key,
@@ -46,8 +50,17 @@ def _extract_vbap_line_fields(vbap_row: pd.Series) -> dict[str, str]:
     return fields
 
 
+def _cmm_version_number(version: Any) -> int:
+    """Numeric CMM_VLOGP.VERSION for ordering (0000000000 → 0)."""
+    s = norm(version)
+    if not s:
+        return -1
+    digits = s.lstrip("0")
+    return int(digits) if digits else 0
+
+
 def _build_cmm_index(cmm: pd.DataFrame) -> Dict[Tuple[str, str], pd.Series]:
-    """Map (document_key, item_key) → first matching CMM_VLOGP row."""
+    """Primary join: DOCUMENT_CHAR10 + DOCUMENT_ITEM (any VERSION)."""
     index: Dict[Tuple[str, str], pd.Series] = {}
     if cmm.empty:
         return index
@@ -60,9 +73,74 @@ def _build_cmm_index(cmm: pd.DataFrame) -> Dict[Tuple[str, str], pd.Series]:
             canonical_document_key(row.get(doc_col)),
             canonical_item_key(row.get(item_col)),
         )
+        if not key[0]:
+            continue
+        existing = index.get(key)
+        if existing is None or _cmm_version_number(row.get("VERSION")) >= _cmm_version_number(
+            existing.get("VERSION")
+        ):
+            index[key] = row
+    return index
+
+
+def _is_initial_cmm_version(version: Any) -> bool:
+    """CMM_VLOGP.VERSION = '0000000000' (initial version)."""
+    s = norm(version)
+    if not s:
+        return False
+    return s.lstrip("0") == "" or s == "0000000000"
+
+
+def _build_cmm_predecessor_index(cmm: pd.DataFrame) -> Dict[Tuple[str, str], pd.Series]:
+    """
+    Secondary join: PREDECESSOR_DOC + PREDECESSOR_DOC_ITM where VERSION is initial.
+
+    PREDECESSOR_DOC is compared as numeric (trailing zeros stripped via
+    canonical_document_key).
+    """
+    index: Dict[Tuple[str, str], pd.Series] = {}
+    if cmm.empty:
+        return index
+    required = ("PREDECESSOR_DOC", "PREDECESSOR_DOC_ITM", "VERSION")
+    if not all(col in cmm.columns for col in required):
+        return index
+    for _, row in cmm.iterrows():
+        if not _is_initial_cmm_version(row.get("VERSION")):
+            continue
+        key = (
+            canonical_document_key(row.get("PREDECESSOR_DOC")),
+            canonical_item_key(row.get("PREDECESSOR_DOC_ITM")),
+        )
         if key[0] and key not in index:
             index[key] = row
     return index
+
+
+def _find_cmm_row(
+    vbeln: str,
+    posnr: str,
+    direct_index: Dict[Tuple[str, str], pd.Series],
+    predecessor_index: Dict[Tuple[str, str], pd.Series],
+) -> Tuple[Optional[pd.Series], Optional[str]]:
+    """
+    Match VBAP line to CMM_VLOGP.
+
+    1. VBELN → DOCUMENT_CHAR10, POSNR → DOCUMENT_ITEM (any VERSION)
+    2. Else VBELN → PREDECESSOR_DOC, POSNR → PREDECESSOR_DOC_ITM (VERSION 0000000000)
+    """
+    key = (canonical_document_key(vbeln), canonical_item_key(posnr))
+    if not key[0]:
+        return None, None
+
+    direct = direct_index.get(key)
+    if direct is not None:
+        return direct, "direct"
+
+    predecessor = predecessor_index.get(key)
+    if predecessor is not None:
+        return predecessor, "predecessor"
+
+    return None, None
 
 
 class RuleEngine:
@@ -109,6 +187,7 @@ class RuleEngine:
         join_exclude = {"VBELN", "POSNR", COMMODITY_FILTER_COLUMN}
 
         cmm_index = _build_cmm_index(cmm)
+        predecessor_index = _build_cmm_predecessor_index(cmm)
         change_index = ChangeResearchIndex.build(
             self.store.get("CDHDR"),
             self.store.get("CDPOS"),
@@ -130,8 +209,8 @@ class RuleEngine:
                 if col not in join_exclude
             }
 
-            cmm_row = cmm_index.get(
-                (canonical_document_key(vbeln), canonical_item_key(posnr))
+            cmm_row, match_path = _find_cmm_row(
+                vbeln, posnr, cmm_index, predecessor_index
             )
 
             if cmm_row is None:
@@ -142,7 +221,7 @@ class RuleEngine:
                         category=DiscrepancyCategory.MISSING_IN_CMM_VLOGP,
                         vbap_attributes=vbap_attrs,
                         qrf_research=self._research_qrfc_cached(
-                            vbeln, qin, err, qrfc_cache
+                            vbeln, posnr, qin, err, qrfc_cache
                         ),
                     )
                 )
@@ -159,6 +238,7 @@ class RuleEngine:
                         category=DiscrepancyCategory.ATTRIBUTE_MISMATCH,
                         vbap_attributes=vbap_attrs,
                         cmm_attributes=cmm_attrs,
+                        cmm_match_path=match_path,
                         vbap_line_fields=_extract_vbap_line_fields(row),
                         mismatched_fields=mismatched,
                         change_history=self._research_changes_cached(
@@ -194,19 +274,44 @@ class RuleEngine:
     def _research_qrfc_cached(
         self,
         vbeln: str,
+        posnr: str,
         qin: pd.DataFrame,
         err: pd.DataFrame,
         cache: Dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        key = canonical_document_key(vbeln)
+        key = f"{canonical_document_key(vbeln)}:{canonical_item_key(posnr)}"
         if key in cache:
             return cache[key]
-        result = self._research_qrfc(vbeln, qin, err)
+        result = self._research_qrfc(vbeln, posnr, qin, err)
         cache[key] = result
         return result
 
+    def _enrich_qrfc_match(self, entry: dict[str, Any]) -> dict[str, Any]:
+        err = entry.get("error") if isinstance(entry.get("error"), dict) else {}
+        merged = {**err, **entry}
+        message_id, message_number, raw_message = extract_qrfc_err_state_fields(merged)
+        resolved = resolve_finetuning_from_qrfc_err(merged)
+        if resolved["match_type"] != "none":
+            entry["finetuning"] = {
+                "message_id": message_id,
+                "message_number": message_number,
+                **resolved,
+            }
+        else:
+            entry["finetuning"] = None
+        entry["MESSAGE_ID"] = message_id
+        entry["MESSAGE_NUMBER"] = message_number
+        entry["MESSAGE"] = raw_message
+        entry["message_id"] = message_id
+        entry["message_number"] = message_number
+        entry["message"] = raw_message
+        entry["standard_system_text"] = resolved["standard_system_text"]
+        entry["sap_component_area"] = resolved["sap_component_area"]
+        entry["diagnostic_tcode"] = resolved["diagnostic_tcode"]
+        return entry
+
     def _research_qrfc(
-        self, vbeln: str, qin: pd.DataFrame, err: pd.DataFrame
+        self, vbeln: str, posnr: str, qin: pd.DataFrame, err: pd.DataFrame
     ) -> dict[str, Any]:
         result: dict[str, Any] = {"queue_matches": [], "errors": []}
 
@@ -235,37 +340,56 @@ class RuleEngine:
                 err_rows = err_by_unit.get(unit_id, pd.DataFrame())
                 if err_rows.empty:
                     result["queue_matches"].append(
+                        self._enrich_qrfc_match(
+                            {
+                                "queue_name": queue_name,
+                                "unit_id": unit_id,
+                                "message": "",
+                                "message_id": "",
+                                "message_number": "",
+                            }
+                        )
+                    )
+                    continue
+                for _, erow in err_rows.iterrows():
+                    message_id, message_number, message = extract_qrfc_err_state_fields(erow)
+                    match_entry = {
+                        "queue_name": queue_name,
+                        "unit_id": unit_id,
+                        "MESSAGE": message,
+                        "MESSAGE_ID": message_id,
+                        "MESSAGE_NUMBER": message_number,
+                        "message": message,
+                        "message_id": message_id,
+                        "message_number": message_number,
+                        "error": {
+                            "MESSAGE": message,
+                            "MESSAGE_ID": message_id,
+                            "MESSAGE_NUMBER": message_number,
+                            "message": message,
+                            "message_id": message_id,
+                            "message_number": message_number,
+                        },
+                    }
+                    result["queue_matches"].append(self._enrich_qrfc_match(match_entry))
+                    result["errors"].append(
+                        {
+                            "message": message,
+                            "message_id": message_id,
+                            "message_number": message_number,
+                        }
+                    )
+            else:
+                result["queue_matches"].append(
+                    self._enrich_qrfc_match(
                         {
                             "queue_name": queue_name,
                             "unit_id": unit_id,
                             "message": "",
                             "message_id": "",
+                            "message_number": "",
                         }
                     )
-                    continue
-                for _, erow in err_rows.iterrows():
-                    message = _norm(erow.get("MESSAGE"))
-                    message_id = _norm(erow.get("MESSAGE_ID"))
-                    result["queue_matches"].append(
-                        {
-                            "queue_name": queue_name,
-                            "unit_id": unit_id,
-                            "message": message,
-                            "message_id": message_id,
-                            "error": {"message": message, "message_id": message_id},
-                        }
-                    )
-                    result["errors"].append(
-                        {"message": message, "message_id": message_id}
-                    )
-            else:
-                result["queue_matches"].append(
-                    {
-                        "queue_name": queue_name,
-                        "unit_id": unit_id,
-                        "message": "",
-                        "message_id": "",
-                    }
                 )
 
         return result

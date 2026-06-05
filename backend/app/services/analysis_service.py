@@ -13,7 +13,12 @@ from app.services.app_logger import (
     log_success,
     log_warning,
 )
-from app.services.data_loader import DEFAULT_COMPARE_MAPPINGS, build_scope_label, data_store
+from app.services.data_loader import (
+    DEFAULT_COMPARE_MAPPINGS,
+    build_default_compare_mappings,
+    build_scope_label,
+    data_store,
+)
 from app.services.pdf_generator import PDFGenerator
 from app.services.rule_engine import RuleEngine
 
@@ -70,20 +75,6 @@ class AnalysisService:
             ),
         )
 
-        if compare_mappings:
-            _last_compare_mappings = [m.model_dump() for m in compare_mappings]
-            enabled = [m for m in compare_mappings if m.enabled]
-            log_info(
-                "analysis",
-                f"Using {len(enabled)} enabled attribute mapping(s)",
-                detail=", ".join(f"{m.vbap_field}→{m.cmm_field}" for m in enabled),
-            )
-        elif not _last_compare_mappings:
-            _last_compare_mappings = DEFAULT_COMPARE_MAPPINGS.copy()
-            log_info("analysis", "Using default attribute mappings")
-
-        ai_total_tokens = 0
-
         with StageTimer("data_load", "Loading SAP table CSVs", "Data load complete"):
             if data_store._require_reload:
                 raise ValueError(
@@ -96,6 +87,25 @@ class AnalysisService:
                 f"Tables loaded: {', '.join(tables) if tables else 'none'}",
                 detail=f"data_dir={data_store.data_dir}",
             )
+
+        if compare_mappings:
+            _last_compare_mappings = [m.model_dump() for m in compare_mappings]
+            enabled = [m for m in compare_mappings if m.enabled]
+            log_info(
+                "analysis",
+                f"Using {len(enabled)} enabled attribute mapping(s) from request",
+                detail=", ".join(f"{m.vbap_field}→{m.cmm_field}" for m in enabled),
+            )
+        elif not _last_compare_mappings or _last_compare_mappings == DEFAULT_COMPARE_MAPPINGS:
+            _last_compare_mappings = build_default_compare_mappings()
+            log_info(
+                "analysis",
+                f"Using {len(_last_compare_mappings)} data-driven default attribute mapping(s)",
+            )
+        else:
+            log_info("analysis", "Using saved attribute mappings from prior run")
+
+        ai_total_tokens = 0
 
         with StageTimer(
             "rule_engine",
@@ -182,15 +192,14 @@ class AnalysisService:
             self.run_analysis(generate_pdf=False)
 
         assert _last_result is not None
-        narrative, narrative_tokens = self.orchestrator.generate_pdf_narrative(
-            _last_result.discrepancies,
+        if _pdf_cache is not None:
+            log_info("pdf", "Returning cached PDF report")
+            return _pdf_cache
+
+        narrative = self.orchestrator.build_pdf_narrative(
             _last_result.summary,
-            _last_result.insights,
-            llm_model=_last_llm_model,
+            _last_result.discrepancies,
         )
-        if narrative_tokens:
-            current = _last_result.ai_total_tokens or 0
-            _last_result.ai_total_tokens = current + narrative_tokens
 
         with StageTimer("pdf", "Building PDF document", "PDF document built"):
             _pdf_cache = self.pdf_gen.build(

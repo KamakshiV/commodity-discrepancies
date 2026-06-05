@@ -77,9 +77,109 @@ def _sum_tokens(usages: List[Dict[str, Optional[int]]]) -> int:
     return sum(u.get("total_tokens") or 0 for u in usages)
 
 
-def _discrepancy_context(records: List[DiscrepancyRecord]) -> str:
-    payload = [r.model_dump() for r in records]
+def _slim_qrf_research(research: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not research:
+        return {}
+    queues = research.get("queue_matches") or []
+    slim_queues = []
+    for entry in queues[:5]:
+        if not isinstance(entry, dict):
+            continue
+        slim_queues.append(
+            {
+                "queue_name": entry.get("queue_name"),
+                "message_id": entry.get("message_id"),
+                "message_number": entry.get("message_number"),
+                "message": entry.get("message"),
+                "standard_system_text": entry.get("standard_system_text"),
+            }
+        )
+    return {
+        "queue_matches": slim_queues,
+        "queue_match_count": len(queues),
+    }
+
+
+def _slim_change_history(history: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    return history[:limit]
+
+
+def _discrepancy_context_slim(records: List[DiscrepancyRecord]) -> str:
+    """Compact JSON for classifier prompts — avoids multi-MB payloads."""
+    payload = []
+    for r in records:
+        payload.append(
+            {
+                "vbeln": r.vbeln,
+                "posnr": r.posnr,
+                "category": r.category.value,
+                "mismatched_fields": (r.mismatched_fields or [])[:6],
+                "cmm_match_path": r.cmm_match_path,
+                "qrf_research": _slim_qrf_research(r.qrf_research),
+                "change_history": _slim_change_history(r.change_history or []),
+                "change_history_count": len(r.change_history or []),
+            }
+        )
     return json.dumps(payload, indent=2, default=str)
+
+
+def _missing_context(records: List[DiscrepancyRecord]) -> str:
+    payload = []
+    for r in records:
+        payload.append(
+            {
+                "vbeln": r.vbeln,
+                "posnr": r.posnr,
+                "qrf_research": _slim_qrf_research(r.qrf_research),
+            }
+        )
+    return json.dumps(payload, indent=2, default=str)
+
+
+def _mismatch_context(records: List[DiscrepancyRecord]) -> str:
+    payload = []
+    for r in records:
+        payload.append(
+            {
+                "vbeln": r.vbeln,
+                "posnr": r.posnr,
+                "mismatched_fields": r.mismatched_fields or [],
+                "change_history": _slim_change_history(r.change_history or [], limit=8),
+                "change_history_count": len(r.change_history or []),
+            }
+        )
+    return json.dumps(payload, indent=2, default=str)
+
+
+def _normalize_evidence(value: Any) -> List[str]:
+    """Coerce LLM evidence into List[str] — models sometimes return a single string."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None and str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return [str(value)] if value else []
+
+
+def _normalize_summary_text(value: Any) -> str:
+    """Coerce LLM summary fields into plain text — models sometimes return nested JSON objects."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        lines: List[str] = []
+        for key, item in value.items():
+            label = str(key).replace("_", " ").strip().capitalize()
+            if isinstance(item, (dict, list)):
+                lines.append(f"{label}: {json.dumps(item, default=str)}")
+            else:
+                lines.append(f"{label}: {item}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        return "\n".join(str(v) for v in value if v is not None)
+    return str(value)
 
 
 class AgentOrchestrator:
@@ -116,7 +216,7 @@ class AgentOrchestrator:
             ins, summ = self._fallback(discrepancies, total_commodity, ai_attempted=False)
             return ins, summ, False, 0
 
-        context = _discrepancy_context(discrepancies)
+        context = _discrepancy_context_slim(discrepancies)
         missing = [
             d for d in discrepancies
             if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP
@@ -159,7 +259,7 @@ class AgentOrchestrator:
                     (
                         "Analyze qRFC evidence for missing records. Return JSON array with: "
                         "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner.\n"
-                        f"Records:\n{json.dumps([m.model_dump() for m in missing], default=str)}"
+                        f"Records:\n{_missing_context(missing)}"
                     ),
                     "qRFC Investigator",
                 )
@@ -175,7 +275,7 @@ class AgentOrchestrator:
                     (
                         "Analyze CDHDR/CDPOS change history. Return JSON array with: "
                         "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner.\n"
-                        f"Records:\n{json.dumps([m.model_dump() for m in mismatch], default=str)}"
+                        f"Records:\n{_mismatch_context(mismatch)}"
                     ),
                     "Change History Investigator",
                 )
@@ -260,7 +360,7 @@ class AgentOrchestrator:
                         posnr=item.get("posnr"),
                         classification=item.get("classification"),
                         likely_cause=item.get("likely_cause"),
-                        evidence=item.get("evidence") or [],
+                        evidence=_normalize_evidence(item.get("evidence")),
                         recommended_action=item.get("recommended_action"),
                         recommended_owner=item.get("recommended_owner"),
                     )
@@ -296,8 +396,8 @@ class AgentOrchestrator:
             missing_count=missing,
             mismatch_count=mismatch,
             clean_count=max(0, total_commodity - len(discrepancies)),
-            executive_summary=summary_data.get("executive_summary", ""),
-            root_cause_summary=summary_data.get("root_cause_summary", ""),
+            executive_summary=_normalize_summary_text(summary_data.get("executive_summary", "")),
+            root_cause_summary=_normalize_summary_text(summary_data.get("root_cause_summary", "")),
             recommended_actions=actions,
         )
 
@@ -580,10 +680,19 @@ class AgentOrchestrator:
                 f"{len(discrepancies)} issue(s) need attention."
             ),
             "what_we_found": "\n".join(found_lines),
-            "why_it_matters": (
+            "why_it_matters": summary.root_cause_summary
+            or (
                 "Commodity-relevant sales orders must stay synchronized with CMM_VLOGP "
                 "for logistics, risk reporting, and downstream commodity processes. "
                 "Missing or mismatched data can block shipments and distort exposure."
             ),
             "recommended_actions": "\n".join(action_lines),
         }
+
+    def build_pdf_narrative(
+        self,
+        summary: AnalysisSummary,
+        discrepancies: List[DiscrepancyRecord],
+    ) -> Dict[str, str]:
+        """Fast PDF narrative from analysis summary — no extra OpenAI round trip."""
+        return self._fallback_narrative(summary, discrepancies)

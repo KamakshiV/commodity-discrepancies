@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     google_drive_folder_id: str = ""
     # Inline service-account JSON for Render (alternative: GOOGLE_APPLICATION_CREDENTIALS path)
     google_service_account_json: str = ""
+    # CSV export of Finetuning PDF section "2. Integrated Message Mapping Grid"
+    finetuning_message_map_csv: Path = Field(
+        default=BACKEND_ROOT / "data" / "finetuning_message_mapping.csv",
+        validation_alias=AliasChoices(
+            "FINETUNING_MESSAGE_MAP_CSV",
+            "FINETUNING_MESSAGE_MAPPING_CSV",
+        ),
+    )
+    finetuning_report_pdf: Path = Field(
+        default=BACKEND_ROOT.parent / "Finetuning_Reports_for_Risk_Analysis.pdf",
+        validation_alias=AliasChoices(
+            "FINETUNING_REPORT_PDF",
+            "FINETUNING_PDF",
+        ),
+    )
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     @model_validator(mode="after")
@@ -36,6 +51,20 @@ class Settings(BaseSettings):
         p = self.shared_data_dir
         if not p.is_absolute():
             object.__setattr__(self, "shared_data_dir", (BACKEND_ROOT / p).resolve())
+        finetuning = self.finetuning_message_map_csv
+        if not finetuning.is_absolute():
+            object.__setattr__(
+                self,
+                "finetuning_message_map_csv",
+                (BACKEND_ROOT / finetuning).resolve(),
+            )
+        report_pdf = self.finetuning_report_pdf
+        if not report_pdf.is_absolute():
+            object.__setattr__(
+                self,
+                "finetuning_report_pdf",
+                (BACKEND_ROOT / report_pdf).resolve(),
+            )
         return self
 
     @property
