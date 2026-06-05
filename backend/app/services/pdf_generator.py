@@ -96,16 +96,18 @@ CATEGORY1_COL_WIDTHS = [
     CONTENT_WIDTH * w for w in (0.05, 0.12, 0.10, 0.38, 0.18, 0.17)
 ]
 
-CATEGORY2_SUMMARY_HEADERS = [
+CATEGORY2_DETAIL_HEADERS = [
     "S.NO",
     "VBELN",
     "POSNR",
-    "Attribute",
-    "VBAP value",
-    "CMM value",
+    "Mismatch attribute",
+    "CDPOS.TABNAME",
+    "CDPOS.FNAME",
+    "CDPOS.VALUE_OLD",
+    "CDPOS.VALUE_NEW",
 ]
-CATEGORY2_SUMMARY_WIDTHS = [
-    CONTENT_WIDTH * w for w in (0.06, 0.13, 0.11, 0.20, 0.25, 0.25)
+CATEGORY2_DETAIL_WIDTHS = [
+    CONTENT_WIDTH * w for w in (0.05, 0.11, 0.09, 0.17, 0.10, 0.12, 0.17, 0.19)
 ]
 
 OWNER_EXEC_LABELS = {
@@ -226,8 +228,34 @@ def _parse_mismatch_field(raw: str) -> tuple:
     return raw, "—", "—"
 
 
-def _build_mismatch_summary_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
-    """One row per mismatched attribute (S.NO repeats per order line)."""
+def _mismatch_vbap_field_name(raw: str) -> str:
+    """Extract VBAP field name from rule-engine line 'VBAP_F/CMM_F: a != b'."""
+    if ":" in raw:
+        left = raw.split(":", 1)[0].strip()
+        if "/" in left:
+            return left.split("/", 1)[0].strip()
+        return left
+    return raw.strip()
+
+
+def _cdpos_rows_for_mismatch_attribute(
+    change_history: List[Dict[str, Any]],
+    vbap_field: str,
+) -> List[Dict[str, Any]]:
+    """VBEP CDPOS rows whose FNAME matches the mismatched VBAP attribute."""
+    if not change_history or not vbap_field:
+        return []
+
+    field_key = vbap_field.strip().upper()
+    return [
+        ch
+        for ch in change_history
+        if str(ch.get("FNAME") or "").strip().upper() == field_key
+    ]
+
+
+def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
+    """One row per mismatched attribute × matching CDPOS change (or one row with dashes)."""
     rows: List[List[str]] = []
     for idx, d in enumerate(mismatch, start=1):
         fields = d.mismatched_fields or []
@@ -239,19 +267,48 @@ def _build_mismatch_summary_rows(mismatch: List[DiscrepancyRecord]) -> List[List
                 "—",
                 "—",
                 "—",
+                "—",
+                "—",
             ])
             continue
+
         for field_line in fields:
-            attr, vbap_v, cmm_v = _parse_mismatch_field(field_line)
-            rows.append([
-                str(idx),
-                d.vbeln or "—",
-                d.posnr or "—",
-                attr,
-                vbap_v,
-                cmm_v,
-            ])
+            attr, _, _ = _parse_mismatch_field(field_line)
+            vbap_field = _mismatch_vbap_field_name(field_line)
+            cdpos_rows = _cdpos_rows_for_mismatch_attribute(
+                d.change_history or [],
+                vbap_field,
+            )
+            if not cdpos_rows:
+                rows.append([
+                    str(idx),
+                    d.vbeln or "—",
+                    d.posnr or "—",
+                    attr,
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                ])
+                continue
+
+            for ch in cdpos_rows:
+                rows.append([
+                    str(idx),
+                    d.vbeln or "—",
+                    d.posnr or "—",
+                    attr,
+                    _change_field(ch, "TABNAME", "tabname"),
+                    _change_field(ch, "FNAME", "fname"),
+                    _change_field(ch, "VALUE_OLD", "value_old", format_value=True),
+                    _change_field(ch, "VALUE_NEW", "value_new", format_value=True),
+                ])
     return rows
+
+
+def _build_mismatch_summary_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
+    """Backward-compatible alias for Category 2 PDF rows."""
+    return _build_category2_table_rows(mismatch)
 
 
 def _record_count_footer(count: int, overview_count: int, label: str) -> str:
@@ -700,15 +757,15 @@ class PDFGenerator:
             blocks.append(
                 Paragraph(
                     _escape(
-                        "Summary of every mismatched attribute value, followed by CDPOS "
-                        "change history per order line where available."
+                        "Each row lists the mismatched attribute for the VBAP line and the "
+                        "related CDPOS change fields (TABNAME, FNAME, VALUE_OLD, VALUE_NEW)."
                     ),
                     self._small,
                 )
             )
-            cat2_rows: List[List[str]] = [CATEGORY2_SUMMARY_HEADERS]
-            cat2_rows.extend(_build_mismatch_summary_rows(mismatch))
-            blocks.append(self._para_table(cat2_rows, CATEGORY2_SUMMARY_WIDTHS))
+            cat2_rows: List[List[str]] = [CATEGORY2_DETAIL_HEADERS]
+            cat2_rows.extend(_build_category2_table_rows(mismatch))
+            blocks.append(self._para_table(cat2_rows, CATEGORY2_DETAIL_WIDTHS))
             blocks.append(
                 Paragraph(
                     _record_count_footer(
@@ -717,8 +774,6 @@ class PDFGenerator:
                     self._caption,
                 )
             )
-            blocks.append(Spacer(1, 0.08 * inch))
-            blocks.extend(self._category2_detail_blocks(mismatch))
 
         blocks.append(Spacer(1, 0.08 * inch))
         return blocks

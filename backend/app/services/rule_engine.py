@@ -403,18 +403,16 @@ class RuleEngine:
         index: ChangeResearchIndex,
         cache: Dict[str, list[dict[str, Any]]],
     ) -> list[dict[str, Any]]:
-        key = canonical_document_key(vbeln)
+        key = f"{canonical_document_key(vbeln)}:{canonical_item_key(posnr)}"
         if key not in cache:
             cache[key] = research_vbep_changes_for_vbeln(
                 vbeln,
                 cdhdr,
                 cdpos,
+                posnr=posnr,
                 index=index,
             )
-        base = cache[key]
-        if not posnr:
-            return list(base)
-        return [{**entry, "POSNR": norm(posnr)} for entry in base]
+        return list(cache[key])
 
     def count_commodity_relevant(self) -> int:
         return len(self._scoped_commodity())
