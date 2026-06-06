@@ -24,6 +24,7 @@ export interface AnalysisSummary {
   total_commodity_relevant: number;
   missing_count: number;
   mismatch_count: number;
+  mismatch_detail_count?: number;
   clean_count: number;
   executive_summary: string;
   root_cause_summary: string;

@@ -6,8 +6,7 @@ For a VBAP line (VBELN + POSNR) with attribute differences vs CMM_VLOGP:
 2. From CDHDR take CHANGENR, OBJECTID, OBJECTCLASS (or SAP alias OBJECTCLAS)
 3. Join CDPOS on CHANGENR + OBJECTID + OBJECTCLASS; if no rows, fall back to
    CHANGENR + OBJECTCLASS (CDPOS.OBJECTID may differ from CDHDR.OBJECTID)
-4. Keep CDPOS rows where TABNAME = 'VBEP'
-5. Return TABNAME, FNAME, VALUE_NEW, VALUE_OLD plus CDHDR keys
+4. Return TABNAME, FNAME, VALUE_NEW, VALUE_OLD plus CDHDR keys
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ import pandas as pd
 from app.services.field_compare import canonical_document_key, canonical_item_key, norm
 
 OBJECTCLASS_COLUMNS = ("OBJECTCLASS", "OBJECTCLAS")
-VBEP_TABNAME = "VBEP"
 
 
 def _resolve_column(df: pd.DataFrame, *candidates: str) -> Optional[str]:
@@ -32,10 +30,6 @@ def _resolve_column(df: pd.DataFrame, *candidates: str) -> Optional[str]:
 
 def _empty_cdhdr() -> pd.DataFrame:
     return pd.DataFrame()
-
-
-def _is_vbep_tabname(tabname: Any) -> bool:
-    return norm(tabname).upper() == VBEP_TABNAME
 
 
 def _tabkey_matches_posnr(tabkey: Any, posnr: str) -> bool:
@@ -52,13 +46,6 @@ def _tabkey_matches_posnr(tabkey: Any, posnr: str) -> bool:
         or tk.endswith(padded)
         or (len(item) >= 4 and item in tk)
     )
-
-
-def _filter_vbep_rows(positions: pd.DataFrame) -> pd.DataFrame:
-    if positions.empty or "TABNAME" not in positions.columns:
-        return positions.iloc[0:0]
-    mask = positions["TABNAME"].map(_is_vbep_tabname)
-    return positions[mask].copy()
 
 
 def resolve_cdhdr_object_candidates(
@@ -169,7 +156,7 @@ def _cdpos_direct_by_tabkey(
         return cdpos.iloc[0:0]
 
     matched = cdpos[cdpos["TABKEY"].astype(str).str.strip().isin(tabkeys)]
-    return _filter_vbep_rows(matched)
+    return matched
 
 
 def index_has_required_cdpos(cdpos: pd.DataFrame) -> bool:
@@ -339,7 +326,6 @@ def _collect_changes_from_headers(
 
     for _, hrow in headers.iterrows():
         positions = _lookup_cdpos_for_header(hrow, oc_hdr_col, cdpos, index)
-        positions = _filter_vbep_rows(positions)
         positions = _filter_posnr_rows(positions, posnr)
 
         changenr = norm(hrow.get("CHANGENR"))

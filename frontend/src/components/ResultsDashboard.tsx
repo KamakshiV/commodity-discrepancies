@@ -75,8 +75,10 @@ export default function ResultsDashboard({ result, analysisDurationMs }: Props) 
           },
           {
             label: "Attribute mismatch",
-            value: summary.mismatch_count,
-            pct: (summary.mismatch_count / total) * 100,
+            value: summary.mismatch_detail_count ?? summary.mismatch_count,
+            pct:
+              ((summary.mismatch_detail_count ?? summary.mismatch_count) / total) *
+              100,
             variant: "warn",
           },
         ].map((m) => (

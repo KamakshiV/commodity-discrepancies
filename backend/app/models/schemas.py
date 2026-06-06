@@ -46,6 +46,10 @@ class AnalysisSummary(BaseModel):
     total_commodity_relevant: int
     missing_count: int
     mismatch_count: int
+    mismatch_detail_count: int = Field(
+        0,
+        description="Category 2 table rows (mismatched attributes × CDPOS changes)",
+    )
     clean_count: int
     executive_summary: str = ""
     root_cause_summary: str = ""

@@ -237,14 +237,15 @@ def _parse_mismatch_field(raw: str) -> tuple:
 
 
 def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
-    """One row per mismatched attribute; CDPOS columns from change-document research (VBEP)."""
+    """One row per mismatched attribute × CDPOS change; S.NO increments per table row."""
     rows: List[List[str]] = []
-    for idx, d in enumerate(mismatch, start=1):
+    serial = 1
+    for d in mismatch:
         fields = d.mismatched_fields or []
         history = d.change_history or []
         if not fields:
             rows.append([
-                str(idx),
+                str(serial),
                 d.vbeln or "—",
                 d.posnr or "—",
                 "—",
@@ -253,13 +254,14 @@ def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[
                 "—",
                 "—",
             ])
+            serial += 1
             continue
 
         for field_line in fields:
             attr, _, _ = _parse_mismatch_field(field_line)
             if not history:
                 rows.append([
-                    str(idx),
+                    str(serial),
                     d.vbeln or "—",
                     d.posnr or "—",
                     attr,
@@ -268,11 +270,12 @@ def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[
                     "—",
                     "—",
                 ])
+                serial += 1
                 continue
 
             for ch in history:
                 rows.append([
-                    str(idx),
+                    str(serial),
                     d.vbeln or "—",
                     d.posnr or "—",
                     attr,
@@ -281,12 +284,22 @@ def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[
                     _change_field(ch, "VALUE_OLD", "value_old", format_value=True),
                     _change_field(ch, "VALUE_NEW", "value_new", format_value=True),
                 ])
+                serial += 1
     return rows
 
 
 def _build_mismatch_summary_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
     """Backward-compatible alias for Category 2 PDF rows."""
     return _build_category2_table_rows(mismatch)
+
+
+def count_category2_detail_rows(discrepancies: List[DiscrepancyRecord]) -> int:
+    """Rows in Section 2.2 — one per mismatched attribute × CDPOS change (or dash row)."""
+    mismatch = [
+        d for d in discrepancies
+        if d.category == DiscrepancyCategory.ATTRIBUTE_MISMATCH
+    ]
+    return len(_build_category2_table_rows(mismatch))
 
 
 def _record_count_footer(count: int, overview_count: int, label: str) -> str:
@@ -460,6 +473,14 @@ class PDFGenerator:
             bulletIndent=0,
             spaceAfter=4,
         )
+        self._exec_numbered_list = ParagraphStyle(
+            "ExecNumberedList",
+            parent=self._body,
+            leftIndent=16,
+            spaceBefore=2,
+            spaceAfter=2,
+            leading=13,
+        )
         self._caption = ParagraphStyle(
             "TableCaption",
             parent=styles["BodyText"],
@@ -583,8 +604,8 @@ class PDFGenerator:
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7fafc")),
                 ("LEFTPADDING", (0, 0), (-1, -1), 14),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ])
         )
@@ -622,6 +643,7 @@ class PDFGenerator:
             )
         )
 
+        mismatch_lines = summary.mismatch_detail_count or summary.mismatch_count
         bullets = [
             f"Total Booked Contracts Analyzed: {summary.total_commodity_relevant} Active Sales Orders",
             f"Total Discrepancies Located: {total_issues} Discrepancy Deltas",
@@ -630,16 +652,18 @@ class PDFGenerator:
                 "(Risk Management Blindspot)"
             ),
             (
-                f"Active Portfolio Drift (Attribute Mismatches): {summary.mismatch_count} "
-                "Contracts (Physical / Attribute Tracking Drift)"
+                f"Active Portfolio Drift (Attribute Mismatches): {mismatch_lines} Rows "
+                "(Physical / Attribute Tracking Drift)"
             ),
             (
                 f"Overall Ledger Integrity Index: {align_pct:.2f}% Alignment "
                 "(Critical limit is 99.00%)"
             ),
         ]
-        for item in bullets:
-            box_flowables.append(Paragraph(f"– {_escape(item)}", self._bullet))
+        numbered = "<br/>".join(
+            f"{idx}. {_escape(item)}" for idx, item in enumerate(bullets, start=1)
+        )
+        box_flowables.append(Paragraph(numbered, self._exec_numbered_list))
 
         blocks.append(self._summary_box(box_flowables))
 
@@ -747,7 +771,9 @@ class PDFGenerator:
             blocks.append(
                 Paragraph(
                     _record_count_footer(
-                        len(mismatch), summary.mismatch_count, "mismatch records"
+                        len(_build_category2_table_rows(mismatch)),
+                        summary.mismatch_detail_count or summary.mismatch_count,
+                        "mismatch detail rows",
                     ),
                     self._caption,
                 )

@@ -22,6 +22,7 @@ from app.services.app_logger import (
     log_success,
     log_warning,
 )
+from app.services.pdf_generator import count_category2_detail_rows
 
 
 def _chat(
@@ -395,6 +396,7 @@ class AgentOrchestrator:
             total_commodity_relevant=total_commodity,
             missing_count=missing,
             mismatch_count=mismatch,
+            mismatch_detail_count=count_category2_detail_rows(discrepancies),
             clean_count=max(0, total_commodity - len(discrepancies)),
             executive_summary=_normalize_summary_text(summary_data.get("executive_summary", "")),
             root_cause_summary=_normalize_summary_text(summary_data.get("root_cause_summary", "")),
@@ -521,6 +523,7 @@ class AgentOrchestrator:
             total_commodity_relevant=total_commodity,
             missing_count=missing,
             mismatch_count=mismatch,
+            mismatch_detail_count=count_category2_detail_rows(discrepancies),
             clean_count=max(0, total_commodity - len(discrepancies)),
             executive_summary=(
                 f"{len(discrepancies)} discrepancies found across {total_commodity} "

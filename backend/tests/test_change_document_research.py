@@ -40,9 +40,9 @@ def test_vbep_change_join_with_objectclas_alias():
 
     changes = research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos, posnr="000010")
 
-    assert len(changes) == 1
-    assert changes[0]["TABNAME"] == "VBEP"
-    assert changes[0]["FNAME"] == "BMENG"
+    assert len(changes) == 2
+    tabnames = {c["TABNAME"] for c in changes}
+    assert tabnames == {"VBEP", "VBAP"}
 
 
 def test_three_key_join_preferred_over_two_key_pool():
@@ -119,12 +119,12 @@ def test_cdpos_objectid_may_differ_from_cdhdr_vbeln():
     )
 
     changes = research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos)
-    assert len(changes) == 1
-    assert changes[0]["TABNAME"] == "VBEP"
-    assert changes[0]["FNAME"] == "LGORT"
-    assert changes[0]["VALUE_NEW"] == "INTR"
-    assert changes[0]["CDHDR_OBJECTID"] == "51000401"
-    assert changes[0]["CDPOS_OBJECTID"] == "1200000058"
+    assert len(changes) == 2
+    lgort = [c for c in changes if c["FNAME"] == "LGORT"][0]
+    assert lgort["TABNAME"] == "VBEP"
+    assert lgort["VALUE_NEW"] == "INTR"
+    assert lgort["CDHDR_OBJECTID"] == "51000401"
+    assert lgort["CDPOS_OBJECTID"] == "1200000058"
 
 
 def test_no_match_when_vbeln_not_in_cdhdr():
@@ -145,8 +145,8 @@ def test_no_match_when_vbeln_not_in_cdhdr():
     assert research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos) == []
 
 
-def test_vbep_lgort_change_via_cmm_internal_doc_bridge():
-    """CDHDR uses internal OBJECTID; CDPOS LGORT must be on TABNAME=VBEP."""
+def test_lgort_change_via_cmm_internal_doc_bridge():
+    """CDHDR uses internal OBJECTID resolved from CMM_VLOGP linkage."""
     cdhdr = pd.DataFrame(
         [
             {
