@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { AgentInsight, AnalysisResult, DiscrepancyRecord } from "../types";
 import { formatAnalysisDuration } from "../utils/formatDuration";
+import { formatStageTimings } from "../utils/stageTimings";
 
 type ResultsTab = "overview" | "discrepancies" | "insights" | "actions";
 type CategoryFilter = "all" | "missing" | "mismatch";
@@ -16,6 +17,7 @@ function isMissing(d: DiscrepancyRecord) {
 
 export default function ResultsDashboard({ result, analysisDurationMs }: Props) {
   const durationMs = result.duration_ms ?? analysisDurationMs ?? null;
+  const stageTimingLine = formatStageTimings(result.stage_timings_ms ?? {});
   const [tab, setTab] = useState<ResultsTab>("overview");
   const [filter, setFilter] = useState<CategoryFilter>("all");
   const [search, setSearch] = useState("");
@@ -55,6 +57,12 @@ export default function ResultsDashboard({ result, analysisDurationMs }: Props) 
       {durationMs != null && (
         <p className="analysis-time-banner" role="status">
           Analysis completed in <strong>{formatAnalysisDuration(durationMs)}</strong>
+          {stageTimingLine && (
+            <>
+              {" "}
+              <span className="analysis-stage-timings">({stageTimingLine})</span>
+            </>
+          )}
         </p>
       )}
       <div className="metrics-interactive">

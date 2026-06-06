@@ -133,10 +133,15 @@ export default function App() {
       setLoadingPhase(0);
       return;
     }
-    const id = setInterval(() => {
-      setLoadingPhase((p) => Math.min(p + 1, 4));
-    }, 2200);
-    return () => clearInterval(id);
+    setLoadingPhase(0);
+    // Progress is approximate — AI often runs longer than earlier phases.
+    const timers = [
+      window.setTimeout(() => setLoadingPhase(1), 2000),
+      window.setTimeout(() => setLoadingPhase(2), 5000),
+      window.setTimeout(() => setLoadingPhase(3), 8000),
+      window.setTimeout(() => setLoadingPhase(4), 120000),
+    ];
+    return () => timers.forEach(clearTimeout);
   }, [analyzing]);
 
   useEffect(() => {

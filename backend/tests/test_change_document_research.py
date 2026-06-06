@@ -122,6 +122,7 @@ def test_cdpos_objectid_may_differ_from_cdhdr_vbeln():
     assert len(changes) == 1
     assert changes[0]["TABNAME"] == "VBEP"
     assert changes[0]["FNAME"] == "LGORT"
+    assert changes[0]["VALUE_NEW"] == "INTR"
     assert changes[0]["CDHDR_OBJECTID"] == "51000401"
     assert changes[0]["CDPOS_OBJECTID"] == "1200000058"
 
@@ -142,3 +143,62 @@ def test_no_match_when_vbeln_not_in_cdhdr():
         ]
     )
     assert research_vbep_changes_for_vbeln("51000401", cdhdr, cdpos) == []
+
+
+def test_vbep_lgort_change_via_cmm_internal_doc_bridge():
+    """CDHDR uses internal OBJECTID; CDPOS LGORT must be on TABNAME=VBEP."""
+    cdhdr = pd.DataFrame(
+        [
+            {
+                "OBJECTID": "1700007919",
+                "CHANGENR": "0003395261",
+                "OBJECTCLAS": "VERKBELEG",
+            }
+        ]
+    )
+    cdpos = pd.DataFrame(
+        [
+            {
+                "CHANGENR": "0003395261",
+                "OBJECTID": "1700007919",
+                "OBJECTCLAS": "VERKBELEG",
+                "TABNAME": "VBEP",
+                "TABKEY": "0831700007919000010",
+                "FNAME": "LGORT",
+                "VALUE_OLD": "INTR",
+                "VALUE_NEW": "500",
+            }
+        ]
+    )
+    cmm = pd.DataFrame(
+        [
+            {
+                "DOCUMENT_CHAR10": "1700007919",
+                "DOCUMENT_ITEM": "000010",
+                "ROOT_DOC": "0052004067",
+                "LGORT": "500",
+            },
+            {
+                "DOCUMENT_CHAR10": "0052004067",
+                "DOCUMENT_ITEM": "000010",
+                "ROOT_DOC": "0052004067",
+                "LGORT": "500",
+            },
+        ]
+    )
+    cmm_row = cmm.iloc[1]
+
+    changes = research_vbep_changes_for_vbeln(
+        "0052004067",
+        cdhdr,
+        cdpos,
+        posnr="000010",
+        cmm=cmm,
+        cmm_row=cmm_row,
+        mandt="083",
+    )
+
+    assert len(changes) == 1
+    assert changes[0]["TABNAME"] == "VBEP"
+    assert changes[0]["FNAME"] == "LGORT"
+    assert changes[0]["VALUE_NEW"] == "500"

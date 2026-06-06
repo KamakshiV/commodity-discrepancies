@@ -12,6 +12,7 @@ from app.services.app_logger import (
     log_info,
     log_success,
     log_warning,
+    summarize_stage_timings,
 )
 from app.services.data_loader import (
     DEFAULT_COMPARE_MAPPINGS,
@@ -182,7 +183,9 @@ class AnalysisService:
                 )
             ),
         )
-        result.application_logs = collect_logs()
+        logs = collect_logs()
+        result.application_logs = logs
+        result.stage_timings_ms = summarize_stage_timings(logs)
         return result
 
     def generate_pdf(self) -> bytes:

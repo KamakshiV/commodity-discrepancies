@@ -77,6 +77,10 @@ class AnalysisResult(BaseModel):
     application_logs: List[ApplicationLogEntry] = Field(default_factory=list)
     ai_total_tokens: Optional[int] = None
     duration_ms: Optional[int] = None
+    stage_timings_ms: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-stage elapsed ms (data_load, rule_engine, ai_agent, pdf)",
+    )
 
 
 class HealthResponse(BaseModel):

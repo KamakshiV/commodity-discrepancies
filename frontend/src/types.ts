@@ -66,6 +66,7 @@ export interface AnalysisResult {
   application_logs?: ApplicationLogEntry[];
   ai_total_tokens?: number | null;
   duration_ms?: number | null;
+  stage_timings_ms?: Record<string, number>;
 }
 
 export interface HealthResponse {

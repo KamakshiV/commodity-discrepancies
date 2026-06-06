@@ -248,6 +248,9 @@ class RuleEngine:
                             cdpos,
                             change_index,
                             change_cache,
+                            cmm=cmm,
+                            cmm_row=cmm_row,
+                            mandt=_norm(row.get("MANDT")),
                         ),
                     )
                 )
@@ -402,6 +405,10 @@ class RuleEngine:
         cdpos: pd.DataFrame,
         index: ChangeResearchIndex,
         cache: Dict[str, list[dict[str, Any]]],
+        *,
+        cmm: pd.DataFrame,
+        cmm_row: pd.Series,
+        mandt: str = "",
     ) -> list[dict[str, Any]]:
         key = f"{canonical_document_key(vbeln)}:{canonical_item_key(posnr)}"
         if key not in cache:
@@ -411,6 +418,9 @@ class RuleEngine:
                 cdpos,
                 posnr=posnr,
                 index=index,
+                cmm=cmm,
+                cmm_row=cmm_row,
+                mandt=mandt,
             )
         return list(cache[key])
 

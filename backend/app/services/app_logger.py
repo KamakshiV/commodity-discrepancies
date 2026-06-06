@@ -7,9 +7,16 @@ import time
 import traceback
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.models.schemas import ApplicationLogEntry
+
+# StageTimer finish messages — used to pick outer stage durations from logs.
+_STAGE_FINISH_MARKERS = (
+    "complete",
+    "built",
+    "finished",
+)
 
 logger = logging.getLogger("commodity.analysis")
 
@@ -39,6 +46,28 @@ def begin_analysis_logs() -> None:
 def collect_logs() -> List[ApplicationLogEntry]:
     logs = _request_logs.get()
     return list(logs) if logs else []
+
+
+def summarize_stage_timings(logs: List[ApplicationLogEntry]) -> Dict[str, int]:
+    """
+    Per-stage elapsed ms from StageTimer finish lines (max duration per stage).
+
+    Avoids summing individual AI agent calls — the outer ``ai_agent`` timer
+    already covers the full orchestration window.
+    """
+    timings: Dict[str, int] = {}
+    for entry in logs:
+        if entry.duration_ms is None:
+            continue
+        msg = entry.message.lower()
+        if not any(marker in msg for marker in _STAGE_FINISH_MARKERS):
+            continue
+        # Individual agent finishes also say "finished" — skip those for ai_agent.
+        if entry.stage == "ai_agent" and entry.agent_name:
+            continue
+        ms = int(entry.duration_ms)
+        timings[entry.stage] = max(ms, timings.get(entry.stage, 0))
+    return timings
 
 
 def _emit(entry: ApplicationLogEntry) -> None:

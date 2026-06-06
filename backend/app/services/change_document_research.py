@@ -61,6 +61,122 @@ def _filter_vbep_rows(positions: pd.DataFrame) -> pd.DataFrame:
     return positions[mask].copy()
 
 
+def resolve_cdhdr_object_candidates(
+    vbeln: str,
+    posnr: str,
+    cmm: pd.DataFrame,
+    cmm_row: Optional[pd.Series] = None,
+) -> List[str]:
+    """
+    OBJECTID keys to try in CDHDR.
+
+    SAP exports often store internal document numbers in CDHDR/CDPOS while VBAP
+    carries VBELN. When direct VBELN match fails, derive internal ids from the
+    matched CMM row and from ROOT_DOC / PREDECESSOR_DOC siblings.
+    """
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    def add(val: Any) -> None:
+        for key in (canonical_document_key(val), norm(val)):
+            if key and key not in seen:
+                seen.add(key)
+                candidates.append(key)
+
+    add(vbeln)
+
+    if cmm_row is not None:
+        for col in ("DOCUMENT_CHAR10", "DOCUMENT", "ROOT_DOC", "PREDECESSOR_DOC"):
+            if col in cmm_row.index:
+                add(cmm_row.get(col))
+
+    if cmm.empty or not norm(vbeln):
+        return candidates
+
+    v_key = canonical_document_key(vbeln)
+    p_key = canonical_item_key(posnr) if norm(posnr) else ""
+
+    for link_col in ("ROOT_DOC", "PREDECESSOR_DOC", "DOCUMENT_CHAR10"):
+        if link_col not in cmm.columns:
+            continue
+        link_keys = cmm[link_col].map(canonical_document_key)
+        linked = cmm[link_keys == v_key]
+        if p_key and "DOCUMENT_ITEM" in linked.columns:
+            item_keys = linked["DOCUMENT_ITEM"].map(canonical_item_key)
+            item_match = linked[item_keys == p_key]
+            if not item_match.empty:
+                linked = item_match
+        for _, crow in linked.iterrows():
+            for col in ("DOCUMENT_CHAR10", "DOCUMENT"):
+                if col in crow.index:
+                    add(crow.get(col))
+
+    return candidates
+
+
+def _headers_for_object_key(
+    cdhdr: pd.DataFrame,
+    index: ChangeResearchIndex,
+    object_key: str,
+) -> pd.DataFrame:
+    if not object_key:
+        return _empty_cdhdr()
+    headers = index.cdhdr_by_vbeln.get(object_key, _empty_cdhdr())
+    if not headers.empty:
+        return headers
+    if cdhdr.empty or "OBJECTID" not in cdhdr.columns:
+        return _empty_cdhdr()
+    keys = cdhdr["OBJECTID"].map(canonical_document_key)
+    matched = cdhdr[keys == object_key]
+    if not matched.empty:
+        return matched.copy()
+    return cdhdr[cdhdr["OBJECTID"].astype(str).str.strip() == object_key].copy()
+
+
+def _cdpos_tabkey_candidates(mandt: str, object_id: str, posnr: str) -> List[str]:
+    """Build SAP-style CDPOS.TABKEY values (MANDT + doc id + item)."""
+    m = norm(mandt)
+    pos = norm(posnr)
+    oid = norm(object_id)
+    if not m or not oid or not pos:
+        return []
+    keys: List[str] = []
+    seen: set[str] = set()
+    for doc in (oid, oid.lstrip("0") or oid, canonical_document_key(oid)):
+        if not doc:
+            continue
+        key = f"{m}{doc}{pos}"
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+def _cdpos_direct_by_tabkey(
+    cdpos: pd.DataFrame,
+    mandt: str,
+    object_candidates: List[str],
+    posnr: str,
+) -> pd.DataFrame:
+    """Fallback: locate CDPOS rows by TABKEY when CDHDR.OBJECTID is not VBELN."""
+    if cdpos.empty or "TABKEY" not in cdpos.columns or not index_has_required_cdpos(cdpos):
+        return cdpos.iloc[0:0]
+
+    tabkeys: set[str] = set()
+    for obj in object_candidates:
+        tabkeys.update(_cdpos_tabkey_candidates(mandt, obj, posnr))
+    if not tabkeys:
+        return cdpos.iloc[0:0]
+
+    matched = cdpos[cdpos["TABKEY"].astype(str).str.strip().isin(tabkeys)]
+    return _filter_vbep_rows(matched)
+
+
+def index_has_required_cdpos(cdpos: pd.DataFrame) -> bool:
+    required = {"CHANGENR", "OBJECTID", "TABNAME", "FNAME", "VALUE_NEW", "VALUE_OLD"}
+    return required.issubset(cdpos.columns)
+
+
 def _filter_posnr_rows(positions: pd.DataFrame, posnr: Optional[str]) -> pd.DataFrame:
     if positions.empty or not posnr or "TABKEY" not in positions.columns:
         return positions
@@ -198,34 +314,29 @@ def _lookup_cdpos_for_header(
     return positions if positions is not None else cdpos.iloc[0:0]
 
 
-def research_vbep_changes_for_vbeln(
-    vbeln: str,
-    cdhdr: pd.DataFrame,
+def _change_entry_dedupe_key(entry: Dict[str, Any]) -> tuple[str, ...]:
+    return (
+        norm(entry.get("CHANGENR")),
+        norm(entry.get("CDHDR_OBJECTID")),
+        norm(entry.get("TABNAME")),
+        norm(entry.get("FNAME")),
+        norm(entry.get("VALUE_OLD")),
+        norm(entry.get("VALUE_NEW")),
+    )
+
+
+def _collect_changes_from_headers(
+    headers: pd.DataFrame,
     cdpos: pd.DataFrame,
-    *,
-    posnr: Optional[str] = None,
-    index: Optional[ChangeResearchIndex] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Run Scenario 2 change-document research for one sales order item.
-
-    Pass a shared ``ChangeResearchIndex`` when processing many VBAP lines.
-    """
-    if index is None:
-        index = ChangeResearchIndex.build(cdhdr, cdpos)
-
-    target = canonical_document_key(vbeln)
-    headers = index.cdhdr_by_vbeln.get(target, _empty_cdhdr())
-    if headers.empty:
-        headers = _match_cdhdr_by_vbeln(cdhdr, vbeln)
-    if headers.empty or cdpos.empty or not index.has_required_cdpos_cols:
-        return []
-
+    index: ChangeResearchIndex,
+    posnr: Optional[str],
+    changes: List[Dict[str, Any]],
+    seen: set[tuple[str, ...]],
+) -> None:
     oc_hdr_col = _resolve_column(headers, *OBJECTCLASS_COLUMNS)
     if not oc_hdr_col or not index.oc_pos_col:
-        return []
+        return
 
-    changes: List[Dict[str, Any]] = []
     for _, hrow in headers.iterrows():
         positions = _lookup_cdpos_for_header(hrow, oc_hdr_col, cdpos, index)
         positions = _filter_vbep_rows(positions)
@@ -250,6 +361,81 @@ def research_vbep_changes_for_vbeln(
             }
             if posnr:
                 entry["POSNR"] = norm(posnr)
+            key = _change_entry_dedupe_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            changes.append(entry)
+
+
+def research_vbep_changes_for_vbeln(
+    vbeln: str,
+    cdhdr: pd.DataFrame,
+    cdpos: pd.DataFrame,
+    *,
+    posnr: Optional[str] = None,
+    index: Optional[ChangeResearchIndex] = None,
+    cmm: Optional[pd.DataFrame] = None,
+    cmm_row: Optional[pd.Series] = None,
+    mandt: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Run Scenario 2 change-document research for one sales order item.
+
+    Pass a shared ``ChangeResearchIndex`` when processing many VBAP lines.
+    When CDHDR.OBJECTID is an internal document id, pass ``cmm`` / ``cmm_row`` so
+    we can resolve it from ROOT_DOC / PREDECESSOR_DOC linkage in CMM_VLOGP.
+    """
+    if index is None:
+        index = ChangeResearchIndex.build(cdhdr, cdpos)
+
+    if cdpos.empty or not index.has_required_cdpos_cols:
+        return []
+
+    cmm_df = cmm if cmm is not None else pd.DataFrame()
+    object_candidates = resolve_cdhdr_object_candidates(
+        vbeln,
+        posnr or "",
+        cmm_df,
+        cmm_row,
+    )
+
+    changes: List[Dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    for obj_key in object_candidates:
+        headers = _headers_for_object_key(cdhdr, index, obj_key)
+        if headers.empty:
+            continue
+        _collect_changes_from_headers(
+            headers, cdpos, index, posnr, changes, seen
+        )
+
+    if mandt and norm(posnr):
+        direct = _cdpos_direct_by_tabkey(
+            cdpos, mandt, object_candidates, posnr or ""
+        )
+        direct = _filter_posnr_rows(direct, posnr)
+        for _, prow in direct.iterrows():
+            oc_col = index.oc_pos_col or "OBJECTCLASS"
+            entry = {
+                "CHANGENR": norm(prow.get("CHANGENR")),
+                "OBJECTID": norm(prow.get("OBJECTID")),
+                "OBJECTCLASS": norm(prow.get(oc_col)),
+                "CDHDR_OBJECTID": norm(prow.get("OBJECTID")),
+                "CDPOS_OBJECTID": norm(prow.get("OBJECTID")),
+                "TABNAME": norm(prow.get("TABNAME")),
+                "FNAME": norm(prow.get("FNAME")),
+                "VALUE_OLD": norm(prow.get("VALUE_OLD")),
+                "VALUE_NEW": norm(prow.get("VALUE_NEW")),
+                "TABKEY": norm(prow.get("TABKEY")) if "TABKEY" in prow.index else "",
+            }
+            if posnr:
+                entry["POSNR"] = norm(posnr)
+            key = _change_entry_dedupe_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
             changes.append(entry)
 
     return changes

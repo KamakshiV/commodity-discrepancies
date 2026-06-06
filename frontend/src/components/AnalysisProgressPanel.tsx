@@ -7,7 +7,7 @@ const PHASES = [
   "Loading SAP table data…",
   "Matching VBAP ↔ CMM_VLOGP…",
   "Running qRFC & change research…",
-  "Generating AI insights…",
+  "Running AI agents (often the longest step)…",
   "Building PDF report…",
 ];
 
@@ -19,7 +19,8 @@ export default function AnalysisProgressPanel({ phase, inline = false }: Props) 
           <span className="step-badge">Step 4</span>
           <h2>Analysis in progress</h2>
           <p>
-            Reconciling records, researching qRFC and change documents, and generating AI explanations. This may take a minute.
+            Reconciling records, researching qRFC and change documents, and running OpenAI agents.
+            Most of the wait is AI analysis — PDF generation is typically under one second.
           </p>
         </div>
 

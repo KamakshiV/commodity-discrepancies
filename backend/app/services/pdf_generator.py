@@ -117,6 +117,14 @@ OWNER_EXEC_LABELS = {
 }
 
 
+def _format_owner_label(owner: str) -> str:
+    """Human-readable owner line for Section 4 action items."""
+    text = (owner or "").strip()
+    if not text or text.upper() == "TBD":
+        return "TBD (Unassigned)"
+    return OWNER_EXEC_LABELS.get(text, text)
+
+
 def _qrfc_field(entry: Dict[str, Any], *keys: str) -> str:
     for key in keys:
         val = entry.get(key)
@@ -228,37 +236,12 @@ def _parse_mismatch_field(raw: str) -> tuple:
     return raw, "—", "—"
 
 
-def _mismatch_vbap_field_name(raw: str) -> str:
-    """Extract VBAP field name from rule-engine line 'VBAP_F/CMM_F: a != b'."""
-    if ":" in raw:
-        left = raw.split(":", 1)[0].strip()
-        if "/" in left:
-            return left.split("/", 1)[0].strip()
-        return left
-    return raw.strip()
-
-
-def _cdpos_rows_for_mismatch_attribute(
-    change_history: List[Dict[str, Any]],
-    vbap_field: str,
-) -> List[Dict[str, Any]]:
-    """VBEP CDPOS rows whose FNAME matches the mismatched VBAP attribute."""
-    if not change_history or not vbap_field:
-        return []
-
-    field_key = vbap_field.strip().upper()
-    return [
-        ch
-        for ch in change_history
-        if str(ch.get("FNAME") or "").strip().upper() == field_key
-    ]
-
-
 def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
-    """One row per mismatched attribute × matching CDPOS change (or one row with dashes)."""
+    """One row per mismatched attribute; CDPOS columns from change-document research (VBEP)."""
     rows: List[List[str]] = []
     for idx, d in enumerate(mismatch, start=1):
         fields = d.mismatched_fields or []
+        history = d.change_history or []
         if not fields:
             rows.append([
                 str(idx),
@@ -274,12 +257,7 @@ def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[
 
         for field_line in fields:
             attr, _, _ = _parse_mismatch_field(field_line)
-            vbap_field = _mismatch_vbap_field_name(field_line)
-            cdpos_rows = _cdpos_rows_for_mismatch_attribute(
-                d.change_history or [],
-                vbap_field,
-            )
-            if not cdpos_rows:
+            if not history:
                 rows.append([
                     str(idx),
                     d.vbeln or "—",
@@ -292,7 +270,7 @@ def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[
                 ])
                 continue
 
-            for ch in cdpos_rows:
+            for ch in history:
                 rows.append([
                     str(idx),
                     d.vbeln or "—",
@@ -887,10 +865,10 @@ class PDFGenerator:
         groups = _group_recommended_actions(insights, discrepancies)
         if not groups and summary.recommended_actions:
             for idx, action in enumerate(summary.recommended_actions, start=1):
-                owner = action.get("recommended_owner", "TBD")
+                owner = _format_owner_label(action.get("recommended_owner", "TBD"))
                 blocks.append(
                     Paragraph(
-                        f"{idx}. <b>{_escape(OWNER_EXEC_LABELS.get(owner, owner))}</b>",
+                        f"{idx}. <b>{_escape(owner)}</b>",
                         self._body,
                     )
                 )
@@ -902,7 +880,7 @@ class PDFGenerator:
                 )
         else:
             for idx, (action, owner, orders) in enumerate(groups, start=1):
-                label = OWNER_EXEC_LABELS.get(owner, owner)
+                label = _format_owner_label(owner)
                 blocks.append(
                     Paragraph(f"{idx}. <b>{_escape(label)}</b>", self._body)
                 )
