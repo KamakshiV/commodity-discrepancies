@@ -2,6 +2,25 @@ import type { AttributeMapping, CompareFieldsResponse } from "../types";
 
 const STORAGE_KEY = "commodity_compare_mappings";
 
+function mappingKey(m: AttributeMapping): string {
+  return `${m.vbap_field}→${m.cmm_field}`;
+}
+
+/** Keep saved rows but add any new server defaults (e.g. LGORT) the user may lack. */
+export function mergeWithDefaultMappings(
+  saved: AttributeMapping[],
+  defaults: AttributeMapping[]
+): AttributeMapping[] {
+  const seen = new Set(saved.map(mappingKey));
+  const merged = saved.map((m) => ({ ...m }));
+  for (const row of defaults) {
+    if (!seen.has(mappingKey(row))) {
+      merged.push({ ...row });
+    }
+  }
+  return merged;
+}
+
 export function loadSavedMappings(
   defaults: AttributeMapping[]
 ): AttributeMapping[] {
@@ -9,7 +28,9 @@ export function loadSavedMappings(
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as AttributeMapping[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return mergeWithDefaultMappings(parsed, defaults);
+      }
     }
   } catch {
     /* ignore */

@@ -116,6 +116,52 @@ def _build_cmm_predecessor_index(cmm: pd.DataFrame) -> Dict[Tuple[str, str], pd.
     return index
 
 
+def _cmm_rows_for_match_key(
+    cmm: pd.DataFrame,
+    vbeln: str,
+    posnr: str,
+    match_path: str,
+) -> pd.DataFrame:
+    """All CMM rows sharing the join key used for *match_path*."""
+    if cmm.empty or not match_path:
+        return pd.DataFrame()
+    doc_key = canonical_document_key(vbeln)
+    item_key = canonical_item_key(posnr)
+    if not doc_key:
+        return pd.DataFrame()
+    if match_path == "direct":
+        doc_col, item_col = "DOCUMENT_CHAR10", "DOCUMENT_ITEM"
+    else:
+        doc_col, item_col = "PREDECESSOR_DOC", "PREDECESSOR_DOC_ITM"
+    if doc_col not in cmm.columns or item_col not in cmm.columns:
+        return pd.DataFrame()
+    mask_doc = cmm[doc_col].map(canonical_document_key) == doc_key
+    mask_item = cmm[item_col].map(canonical_item_key) == item_key
+    return cmm[mask_doc & mask_item]
+
+
+def _select_cmm_compare_row(
+    pool: pd.DataFrame,
+    joined_row: pd.Series,
+) -> pd.Series:
+    """
+    Row used for VBAP ↔ CMM attribute comparison.
+
+    Prefer VERSION 0000000000 when present; otherwise the lowest VERSION number
+    (first commodity snapshot). Latest-version rows can hide drift that still
+    exists relative to the initial CMM record.
+    """
+    if pool.empty:
+        return joined_row
+    v0 = pool[pool["VERSION"].map(_is_initial_cmm_version)]
+    if not v0.empty:
+        return v0.iloc[0]
+    return min(
+        (row for _, row in pool.iterrows()),
+        key=lambda row: _cmm_version_number(row.get("VERSION")),
+    )
+
+
 def _find_cmm_row(
     vbeln: str,
     posnr: str,
@@ -214,6 +260,7 @@ class RuleEngine:
             )
 
             if cmm_row is None:
+                # Category 1 — join logic unchanged; qRFC research only for missing rows.
                 results.append(
                     DiscrepancyRecord(
                         vbeln=vbeln,
@@ -227,10 +274,13 @@ class RuleEngine:
                 )
                 continue
 
-            cmm_attrs = {col: _norm(cmm_row.get(col)) for col in cmm_row.index}
-            mismatched = self._compare_attributes(row, cmm_row)
+            # Category 2 — join uses latest/direct match; attribute compare uses first snapshot.
+            compare_pool = _cmm_rows_for_match_key(cmm, vbeln, posnr, match_path or "")
+            compare_row = _select_cmm_compare_row(compare_pool, cmm_row)
+            mismatched = self._compare_attributes(row, compare_row)
 
             if mismatched:
+                cmm_attrs = {col: _norm(compare_row.get(col)) for col in compare_row.index}
                 results.append(
                     DiscrepancyRecord(
                         vbeln=vbeln,

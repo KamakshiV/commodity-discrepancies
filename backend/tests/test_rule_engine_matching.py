@@ -13,6 +13,8 @@ from app.services.rule_engine import (
     _build_cmm_predecessor_index,
     _find_cmm_row,
     _is_initial_cmm_version,
+    _select_cmm_compare_row,
+    _cmm_rows_for_match_key,
 )
 
 
@@ -140,8 +142,53 @@ def test_direct_join_matches_any_version():
     assert row["MATNR"] == "OLD"
 
 
+def test_compare_uses_lowest_cmm_version_not_latest():
+    """Latest CMM row can match VBAP while the first snapshot still differs."""
+    vbap = pd.DataFrame(
+        [{"VBELN": "8000002001", "POSNR": "000010", "LGORT": "FINV"}]
+    )
+    cmm = pd.DataFrame(
+        [
+            {
+                "DOCUMENT_CHAR10": "8000002001",
+                "DOCUMENT_ITEM": "000010",
+                "VERSION": "0000000001",
+                "LGORT": "INTR",
+            },
+            {
+                "DOCUMENT_CHAR10": "8000002001",
+                "DOCUMENT_ITEM": "000010",
+                "VERSION": "0000000002",
+                "LGORT": "FINV",
+            },
+        ]
+    )
+    store = _FakeStore(
+        {
+            "VBAP": vbap,
+            "CMM_VLOGP": cmm,
+            "QRFC_I_QIN_TOP": pd.DataFrame(),
+            "QRFC_I_ERR_STATE": pd.DataFrame(),
+            "CDHDR": pd.DataFrame(),
+            "CDPOS": pd.DataFrame(),
+        }
+    )
+    results = RuleEngine(
+        store,
+        compare_mappings=[{"vbap_field": "LGORT", "cmm_field": "LGORT", "enabled": True}],
+    ).run()
+    assert len(results) == 1
+    assert results[0].category.value == "Attribute Mismatch"
+    assert "INTR" in results[0].mismatched_fields[0]
+
+    pool = _cmm_rows_for_match_key(cmm, "8000002001", "000010", "direct")
+    joined, _ = _find_cmm_row("8000002001", "000010", _build_cmm_index(cmm), {})
+    compare = _select_cmm_compare_row(pool, joined)
+    assert compare["LGORT"] == "INTR"
+
+
 def test_order_0052004069_posnr_000011_is_category_1():
-    """Item 000011 has no CMM_VLOGP row; item 000010 direct-matches on DOCUMENT_CHAR10."""
+    """No CMM_VLOGP join for 4069/000010 (predecessor lacks VERSION 0); 000011 also missing."""
     from pathlib import Path
 
     from app.services.data_loader import read_tabular_file
@@ -167,7 +214,7 @@ def test_order_0052004069_posnr_000011_is_category_1():
     )
     results = RuleEngine(store, scope_vbelns=["0052004069"]).run()
     by_key = {(r.vbeln, r.posnr): r for r in results}
-    assert by_key[("0052004069", "000010")].category.value == "Attribute Mismatch"
+    assert by_key[("0052004069", "000010")].category.value == "Missing in CMM_VLOGP"
     assert by_key[("0052004069", "000011")].category.value == "Missing in CMM_VLOGP"
 
 

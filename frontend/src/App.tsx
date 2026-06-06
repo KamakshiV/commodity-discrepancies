@@ -4,6 +4,7 @@ import AnalysisProgressPanel from "./components/AnalysisProgressPanel";
 import AttributeMappingPanel, {
   clearSavedMappings,
   loadSavedMappings,
+  mergeWithDefaultMappings,
   saveMappings,
 } from "./components/AttributeMappingPanel";
 import ModelSelectionPanel from "./components/ModelSelectionPanel";
@@ -99,7 +100,9 @@ export default function App() {
       const fields = await fetchCompareFields();
       setCompareFields(fields);
       setMappings((prev) =>
-        prev.length ? prev : loadSavedMappings(fields.default_mappings)
+        prev.length
+          ? mergeWithDefaultMappings(prev, fields.default_mappings)
+          : loadSavedMappings(fields.default_mappings)
       );
     } catch {
       setCompareFields(null);
