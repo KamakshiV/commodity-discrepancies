@@ -202,7 +202,7 @@ export default function App() {
         erdatTo: scopeErdatTo,
       });
       if (data.pdf_available) {
-        await downloadPdfReport();
+        downloadPdfReport(undefined, { afterAsync: true });
         setPdfMessage("PDF report downloaded successfully.");
       }
       const elapsedMs = Math.round(performance.now() - startedAt);
@@ -289,9 +289,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const handleDownloadPdf = async () => {
+  const handleDownloadPdf = () => {
     try {
-      await downloadPdfReport();
+      downloadPdfReport();
       setPdfMessage("PDF report downloaded.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "PDF download failed");

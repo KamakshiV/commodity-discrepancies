@@ -1,19 +1,52 @@
 import io
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.models.schemas import AgentInsight, AnalysisSummary, DiscrepancyCategory, DiscrepancyRecord
 from app.services.field_compare import format_display_value
 from app.services.finetuning_message_map import resolve_finetuning_from_qrfc_err
+from app.services.pdf_fonts import NOTO_BOLD, NOTO_ITALIC, NOTO_REGULAR, register_pdf_fonts
 
-# Usable width on letter with 0.75" margins
-CONTENT_WIDTH = 6.5 * inch
+# Sample PDF margins (~56.7 pt / 0.787 in each side)
+PDF_MARGIN = 0.787 * inch
+CONTENT_WIDTH = letter[0] - 2 * PDF_MARGIN
+
+# Typography matched to Risk Analysis Report.pdf (Noto Sans, pt sizes from extract)
+PDF_TYPE = {
+    "title": 17,
+    "subtitle": 14,
+    "date": 10,
+    "section": 14,
+    "subsection": 12,
+    "body": 11,
+    "table": 8,
+    "caption": 9,
+}
+
+# Visual theme (presentation only — does not affect report logic)
+PDF_THEME = {
+    "navy": "#1e3a5f",
+    "navy_light": "#2c5282",
+    "slate": "#4a5568",
+    "slate_light": "#718096",
+    "border": "#cbd5e0",
+    "border_light": "#e2e8f0",
+    "surface": "#f7fafc",
+    "surface_alt": "#edf2f7",
+    "white": "#ffffff",
+    "green": "#276749",
+    "amber": "#c05621",
+    "red": "#c53030",
+    "cat1_accent": "#2b6cb0",
+    "cat2_accent": "#805ad5",
+    "action_orange": "#e68a00",
+}
 
 EXECUTIVE_SUMMARY_LEAD = (
     "During the latest End-of-Day (EOD) portfolio reconciliation, our risk controls "
@@ -97,24 +130,51 @@ CATEGORY1_COL_WIDTHS = [
 ]
 
 CATEGORY2_DETAIL_HEADERS = [
-    "S.NO",
+    "#",
     "VBELN",
     "POSNR",
-    "Mismatch attribute",
-    "CDPOS.TABNAME",
-    "CDPOS.FNAME",
-    "CDPOS.VALUE_OLD",
-    "CDPOS.VALUE_NEW",
+    "Attribute",
+    "Tabname",
+    "Field",
+    "Old value",
+    "New value",
 ]
 CATEGORY2_DETAIL_WIDTHS = [
-    CONTENT_WIDTH * w for w in (0.05, 0.11, 0.09, 0.17, 0.10, 0.12, 0.17, 0.19)
+    CONTENT_WIDTH * w for w in (0.05, 0.10, 0.07, 0.10, 0.09, 0.10, 0.18, 0.31)
 ]
+
+# Columns in Category 2 detail rows that must not wrap (#, VBELN, POSNR, Tabname, Field).
+CATEGORY2_NOWRAP_COLS = frozenset({0, 1, 2, 4, 5})
 
 OWNER_EXEC_LABELS = {
     "SAP Basis": "OPERATIONAL CONTROLS (IT Basis Team)",
     "SAP Commodity Team": "MARKET RISK DESK (Risk Operations)",
     "Functional Analyst": "COMMODITY PORTFOLIO AUDITING (Functional Analyst)",
 }
+
+OWNER_ACTION_TARGETS = {
+    "SAP Basis": (
+        "Clear interface lags to recover immediate visibility of the "
+        "Net Open Position (NOP)."
+    ),
+    "SAP Commodity Team": (
+        "Resolve localized VaR limit calculations before the next trading session."
+    ),
+    "Functional Analyst": (
+        "Trace transaction life cycles to eliminate silent pipeline dropouts."
+    ),
+}
+
+
+class OperationalActionItem(NamedTuple):
+    """Structured remediation item for Section 4 — owner, issue, steps, scope, target."""
+
+    owner_key: str
+    owner_label: str
+    issue: str
+    steps: List[str]
+    affected: str
+    target: str
 
 
 def _format_owner_label(owner: str) -> str:
@@ -123,6 +183,249 @@ def _format_owner_label(owner: str) -> str:
     if not text or text.upper() == "TBD":
         return "TBD (Unassigned)"
     return OWNER_EXEC_LABELS.get(text, text)
+
+
+def _target_for_owner(owner: str, order_count: int) -> str:
+    """Default target line keyed to responsible team (matches report mockup)."""
+    key = (owner or "").strip()
+    if key in OWNER_ACTION_TARGETS:
+        return OWNER_ACTION_TARGETS[key]
+    if order_count:
+        return (
+            f"Resolve {order_count} affected order line(s) and restore ledger integrity "
+            "before the next trading session."
+        )
+    return "Restore ledger integrity before the next trading session."
+
+
+def _order_key(d: DiscrepancyRecord) -> tuple[str, str]:
+    return (d.vbeln or "—", d.posnr or "—")
+
+
+def _sort_discrepancies(records: List[DiscrepancyRecord]) -> List[DiscrepancyRecord]:
+    """Stable ordering for all PDF sections (VBELN, POSNR, category)."""
+    return sorted(
+        records,
+        key=lambda d: (_order_key(d)[0], _order_key(d)[1], d.category.value),
+    )
+
+
+def _sorted_unique_orders(records: List[DiscrepancyRecord]) -> List[tuple[str, str]]:
+    return sorted({_order_key(d) for d in records})
+
+
+def _affected_orders_text(
+    orders: List[tuple[str, str]],
+    *,
+    section_ref: str,
+    max_show: int = 4,
+) -> str:
+    if not orders:
+        return "None identified in this run."
+    shown = orders[:max_show]
+    text = ", ".join(f"{vbeln}/{posnr}" for vbeln, posnr in shown)
+    remaining = len(orders) - len(shown)
+    if remaining > 0:
+        return f"{text} (+{remaining} more — see {section_ref})"
+    return f"{text} (full list in {section_ref})"
+
+
+def _unique_qrfc_diagnostics(
+    records: List[DiscrepancyRecord],
+) -> List[tuple[str, str]]:
+    """Return deduplicated (standard_system_text, diagnostic_tcode) pairs — sorted."""
+    seen: set[tuple[str, str]] = set()
+    out: List[tuple[str, str]] = []
+    for d in _sort_discrepancies(records):
+        entries = (d.qrf_research or {}).get("queue_matches") or []
+        for entry in sorted(
+            entries,
+            key=lambda e: (
+                str(e.get("standard_system_text") or e.get("message") or ""),
+                str(e.get("queue_name") or ""),
+            ),
+        ):
+            std_text, _, tcode = _category1_finetuning_columns(entry)
+            if std_text == "—" and tcode == "—":
+                continue
+            key = (std_text, tcode)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    return sorted(out, key=lambda pair: (pair[0].lower(), pair[1].lower()))
+
+
+def _unique_mismatch_attributes(records: List[DiscrepancyRecord]) -> List[str]:
+    attrs: set[str] = set()
+    for d in _sort_discrepancies(records):
+        for raw in sorted(d.mismatched_fields or []):
+            attr, _, _ = _parse_mismatch_field(raw)
+            short = attr.split(" (VBAP)")[0].strip() if " (VBAP)" in attr else attr
+            if short:
+                attrs.add(short)
+    return sorted(attrs, key=str.lower)
+
+
+def _build_operational_action_items(
+    discrepancies: List[DiscrepancyRecord],
+) -> List[OperationalActionItem]:
+    """
+    Build deterministic, step-by-step action items from reconciliation findings.
+
+    Rule-based only — never reads AI insights or summary.recommended_actions.
+    Same discrepancy data always produces identical Section 4 content.
+    """
+    ordered = _sort_discrepancies(discrepancies)
+    missing = [
+        d for d in ordered
+        if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP
+    ]
+    missing_qrfc = [
+        d for d in missing
+        if (d.qrf_research or {}).get("queue_matches")
+    ]
+    missing_no_qrfc = [
+        d for d in missing
+        if not (d.qrf_research or {}).get("queue_matches")
+    ]
+    mismatch = [
+        d for d in ordered
+        if d.category == DiscrepancyCategory.ATTRIBUTE_MISMATCH
+    ]
+
+    items: List[OperationalActionItem] = []
+
+    if missing_qrfc:
+        orders = _sorted_unique_orders(missing_qrfc)
+        diagnostics = _unique_qrfc_diagnostics(missing_qrfc)
+        steps = [
+            (
+                "In SMQ2, locate stalled commodity interface queues "
+                "(CMM_VLOGP_BGRFC_*) tied to the affected VBELN/POSNR rows in Section 2.1."
+            ),
+            (
+                "For each failed queue entry, open the mapped diagnostic transaction "
+                "from the finetuning grid (typically SM12 / SMQ2) and review the "
+                "Standard System Text message."
+            ),
+        ]
+        if diagnostics:
+            diag_lines = "; ".join(
+                f"{text} ({tcode})" if tcode != "—" else text
+                for text, tcode in diagnostics[:5]
+            )
+            steps.append(
+                f"Address the specific errors seen in this run: {diag_lines}."
+            )
+        steps.extend([
+            (
+                "Release root-document locks (SM12) or correct pricing conditions "
+                "before reprocessing, as indicated by the queue error."
+            ),
+            (
+                "Reprocess the failed queue entries and confirm a CMM_VLOGP row "
+                "exists for each affected sales order line."
+            ),
+            "Re-run this reconciliation report to verify missing counts drop to zero.",
+        ])
+        items.append(
+            OperationalActionItem(
+                owner_key="SAP Basis",
+                owner_label=_format_owner_label("SAP Basis"),
+                issue=(
+                    f"{len(missing_qrfc)} commodity order line(s) are missing from "
+                    "CMM_VLOGP because qRFC interface queues failed during ledger posting."
+                ),
+                steps=steps,
+                affected=_affected_orders_text(
+                    orders, section_ref="Section 2.1"
+                ),
+                target=_target_for_owner("SAP Basis", len(missing_qrfc)),
+            )
+        )
+
+    if mismatch:
+        orders = _sorted_unique_orders(mismatch)
+        attrs = _unique_mismatch_attributes(mismatch)
+        attr_text = ", ".join(attrs[:6]) if attrs else "listed attributes"
+        if len(attrs) > 6:
+            attr_text += ", …"
+        steps = [
+            (
+                f"For each mismatch in Section 2.2, compare VBAP against the CMM_VLOGP "
+                f"baseline for: {attr_text}."
+            ),
+            (
+                "Review linked CDHDR/CDPOS records (TABNAME, FNAME, VALUE_OLD, VALUE_NEW) "
+                "to determine whether the commercial contract or the risk ledger changed first."
+            ),
+            (
+                "Synchronize physical inventory location / quantity tags in CMM_VLOGP "
+                "when VBAP reflects commercial truth, or trigger commodity re-valuation "
+                "if the ledger update was skipped."
+            ),
+            (
+                "Validate that localized VaR and NOP calculations reflect the corrected "
+                "storage and quantity profile."
+            ),
+            "Re-run reconciliation to confirm attribute drift is cleared.",
+        ]
+        items.append(
+            OperationalActionItem(
+                owner_key="SAP Commodity Team",
+                owner_label=_format_owner_label("SAP Commodity Team"),
+                issue=(
+                    f"{len(mismatch)} order line(s) show attribute drift between VBAP "
+                    "and CMM_VLOGP — risk positions may not reflect current commercial data."
+                ),
+                steps=steps,
+                affected=_affected_orders_text(
+                    orders, section_ref="Section 2.2"
+                ),
+                target=_target_for_owner("SAP Commodity Team", len(mismatch)),
+            )
+        )
+
+    if missing_no_qrfc:
+        orders = _sorted_unique_orders(missing_no_qrfc)
+        example = f" (e.g. {orders[0][0]}/{orders[0][1]})" if orders else ""
+        steps = [
+            (
+                f"For each order line in Section 2.1 with no qRFC queue footprint{example}, "
+                "trace the VBAP → commodity document → CMM_VLOGP creation path in "
+                "application logs."
+            ),
+            (
+                "Confirm TRMRISK-RELEVANT = 'C', pricing key, and MtM pricing conditions "
+                "are active on each affected line."
+            ),
+            (
+                "Perform a manual ledger backfill or controlled re-booking when business "
+                "confirms the exposure should be in the Net Open Position."
+            ),
+            (
+                "Document the root cause of any silent pipeline dropout and add monitoring "
+                "for orders that never reach the interface queue."
+            ),
+        ]
+        items.append(
+            OperationalActionItem(
+                owner_key="Functional Analyst",
+                owner_label=_format_owner_label("Functional Analyst"),
+                issue=(
+                    f"{len(missing_no_qrfc)} order line(s) are missing from CMM_VLOGP "
+                    "with no qRFC error — likely a silent booking or configuration gap."
+                ),
+                steps=steps,
+                affected=_affected_orders_text(
+                    orders, section_ref="Section 2.1"
+                ),
+                target=_target_for_owner("Functional Analyst", len(missing_no_qrfc)),
+            )
+        )
+
+    return items
 
 
 def _qrfc_field(entry: Dict[str, Any], *keys: str) -> str:
@@ -234,6 +537,16 @@ def _parse_mismatch_field(raw: str) -> tuple:
             format_display_value(cmm_val),
         )
     return raw, "—", "—"
+
+
+def _compact_mismatch_attr(attr: str) -> str:
+    """Short attribute label for Category 2 table cells (e.g. LGORT)."""
+    text = (attr or "").strip()
+    if " (VBAP)" in text:
+        return text.split(" (VBAP)")[0].strip()
+    if "/" in text:
+        return text.split("/")[0].strip()
+    return text or "—"
 
 
 def _build_category2_table_rows(mismatch: List[DiscrepancyRecord]) -> List[List[str]]:
@@ -370,6 +683,21 @@ def _portfolio_status(summary: AnalysisSummary) -> str:
     return "RED"
 
 
+def _portfolio_status_label(status: str) -> str:
+    """HTML for portfolio status header — white bold text on status-colored bar."""
+    return f"<b>Portfolio Status: {_escape(status.upper())}</b>"
+
+
+def _portfolio_status_bar_color(status: str) -> colors.Color:
+    """Header and border color keyed to GREEN / AMBER / RED."""
+    key = (status or "RED").upper()
+    if key == "GREEN":
+        return _hex("green")
+    if key == "AMBER":
+        return _hex("amber")
+    return _hex("red")
+
+
 def _clean_context(text: str, max_len: int = 120) -> str:
     """Trim SAP diagnostic text for executive bullets."""
     cleaned = " ".join(str(text or "").split())
@@ -378,13 +706,114 @@ def _clean_context(text: str, max_len: int = 120) -> str:
     return cleaned[: max_len - 3].rstrip() + "..."
 
 
-def _pdf_page_footer(canvas, doc) -> None:
+def _section3_error_label(std_text: str) -> str:
+    """Map finetuning / queue text to a crisp Section 3.1 bullet label."""
+    lower = (std_text or "").lower()
+    if "root document locked" in lower or "document locked" in lower:
+        return "Root Cause: Document Lock"
+    if "pricing" in lower or "mtm" in lower or "condition" in lower:
+        return "Pricing Block Error"
+    return "Technical Diagnosis Summary"
+
+
+def _build_section3_missing_bullets(
+    missing: List[DiscrepancyRecord],
+) -> List[tuple[str, str]]:
+    """Up to three labeled bullets for Section 3.1 from qRFC / missing-row data."""
+    bullets: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    pricing_or_lock = 0
+
+    for d in _sort_discrepancies(missing):
+        queues = (d.qrf_research or {}).get("queue_matches") or []
+        if not queues:
+            pair = (
+                "Unbooked Exposure",
+                f"Order {d.vbeln} has no CMM_VLOGP row — check qRFC queues and manual reconciliation.",
+            )
+            if pair not in seen:
+                seen.add(pair)
+                bullets.append(pair)
+            continue
+
+        for entry in queues:
+            std_text, _, _ = _category1_finetuning_columns(entry)
+            label = _section3_error_label(std_text)
+            if label == "Root Cause: Document Lock":
+                text = (
+                    f"Order {d.vbeln} is locked at the root level (SM12), "
+                    "causing an unbooked risk blind spot."
+                )
+                pricing_or_lock += 1
+            elif label == "Pricing Block Error":
+                text = (
+                    f"Order {d.vbeln} failed to interface due to inactive MtM condition "
+                    f"or pricing error ({_clean_context(std_text, 60)})."
+                )
+                pricing_or_lock += 1
+            else:
+                text = (
+                    f"Order {d.vbeln}/{d.posnr}: {_clean_context(std_text, 90)} "
+                    "— qRFC interface block."
+                )
+            pair = (label, text)
+            if pair not in seen:
+                seen.add(pair)
+                bullets.append(pair)
+            if len(bullets) >= 2:
+                break
+        if len(bullets) >= 2:
+            break
+
+    if pricing_or_lock >= 2 and len(bullets) < 3:
+        bullets.append((
+            "Technical Diagnosis Summary",
+            (
+                f"{len(missing)} order(s) fail at the pricing determination layer due to "
+                "missing Start Date or locked root documents, forcing qRFC interface blocks."
+            ),
+        ))
+
+    return bullets[:3]
+
+
+def _hex(name: str) -> colors.Color:
+    return colors.HexColor(PDF_THEME[name])
+
+
+def _accent_rule(width: float = CONTENT_WIDTH, thickness: float = 2) -> Table:
+    """Thin horizontal rule for section separation."""
+    rule = Table([[""]], colWidths=[width], rowHeights=[thickness / 72 * inch])
+    rule.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), _hex("navy")),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ])
+    )
+    return rule
+
+
+def _pdf_page_decorations(canvas, doc) -> None:
+    """Footer rule and page number (sample-style, no top stripe)."""
     canvas.saveState()
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(colors.HexColor("#718096"))
-    page = canvas.getPageNumber()
-    canvas.drawCentredString(letter[0] / 2, 0.45 * inch, f"— {page} —")
+    page_w, _page_h = letter
+
+    canvas.setStrokeColor(_hex("border_light"))
+    canvas.setLineWidth(0.5)
+    canvas.line(PDF_MARGIN, 0.58 * inch, page_w - PDF_MARGIN, 0.58 * inch)
+
+    canvas.setFont(NOTO_REGULAR, 8)
+    canvas.setFillColor(_hex("slate_light"))
+    canvas.drawString(PDF_MARGIN, 0.42 * inch, "Commodity Exposure & Portfolio Drift Analysis")
+    canvas.drawRightString(page_w - PDF_MARGIN, 0.42 * inch, f"Page {canvas.getPageNumber()}")
+
     canvas.restoreState()
+
+
+def _pdf_page_footer(canvas, doc) -> None:
+    """Backward-compatible alias for page callbacks."""
+    _pdf_page_decorations(canvas, doc)
 
 
 def _format_qrfc_readable(research: Optional[Dict[str, Any]]) -> List[str]:
@@ -413,110 +842,212 @@ class PDFGenerator:
     """Builds the commodity discrepancy PDF report (primary deliverable)."""
 
     def __init__(self):
+        register_pdf_fonts()
         styles = getSampleStyleSheet()
+        t = PDF_TYPE
         self._report_title = ParagraphStyle(
             "ReportTitle",
             parent=styles["Heading1"],
-            fontSize=17,
-            leading=20,
+            fontSize=t["title"],
+            leading=t["title"] + 6,
             spaceAfter=4,
+            spaceBefore=0,
+            alignment=1,
             textColor=colors.black,
-            fontName="Helvetica-Bold",
+            fontName=NOTO_BOLD,
         )
         self._report_subtitle = ParagraphStyle(
             "ReportSubtitle",
             parent=styles["BodyText"],
-            fontSize=11,
-            leading=14,
-            spaceAfter=2,
-            textColor=colors.HexColor("#2d3748"),
+            fontSize=t["subtitle"],
+            leading=t["subtitle"] + 4,
+            spaceAfter=4,
+            spaceBefore=0,
+            alignment=1,
+            textColor=_hex("cat1_accent"),
+            fontName=NOTO_BOLD,
         )
         self._report_date = ParagraphStyle(
             "ReportDate",
             parent=styles["BodyText"],
-            fontSize=10,
-            leading=13,
-            spaceAfter=14,
-            textColor=colors.HexColor("#4a5568"),
+            fontSize=t["date"],
+            leading=t["date"] + 3,
+            spaceAfter=0,
+            spaceBefore=0,
+            alignment=1,
+            textColor=colors.black,
+            fontName=NOTO_ITALIC,
         )
         self._section_heading = ParagraphStyle(
             "SectionHeading",
             parent=styles["Heading2"],
-            fontSize=13,
-            leading=16,
-            spaceBefore=16,
-            spaceAfter=8,
-            textColor=colors.black,
-            fontName="Helvetica-Bold",
+            fontSize=t["section"],
+            leading=t["section"] + 4,
+            spaceBefore=12,
+            spaceAfter=2,
+            textColor=_hex("navy"),
+            fontName=NOTO_BOLD,
         )
         self._subsection_heading = ParagraphStyle(
             "SubsectionHeading",
             parent=styles["Heading3"],
-            fontSize=11,
-            leading=14,
-            spaceBefore=10,
-            spaceAfter=6,
+            fontSize=t["subsection"],
+            leading=t["subsection"] + 3,
+            spaceBefore=14,
+            spaceAfter=8,
             textColor=colors.black,
-            fontName="Helvetica-Bold",
+            fontName=NOTO_BOLD,
         )
         self._body = ParagraphStyle(
             "ExecBody",
             parent=styles["BodyText"],
-            fontSize=10,
-            leading=14,
-            spaceAfter=6,
+            fontSize=t["body"],
+            leading=t["body"] + 4,
+            spaceAfter=8,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
         )
         self._bullet = ParagraphStyle(
             "ExecBullet",
             parent=self._body,
             leftIndent=14,
             bulletIndent=0,
-            spaceAfter=4,
+            spaceAfter=6,
+            leading=t["body"] + 4,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
         )
         self._exec_numbered_list = ParagraphStyle(
             "ExecNumberedList",
             parent=self._body,
-            leftIndent=16,
+            leftIndent=14,
             spaceBefore=2,
             spaceAfter=2,
-            leading=13,
+            leading=t["body"] + 4,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
+        )
+        self._portfolio_status_header = ParagraphStyle(
+            "PortfolioStatusHeader",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 4,
+            textColor=_hex("white"),
+            fontName=NOTO_BOLD,
+            spaceBefore=0,
+            spaceAfter=0,
+        )
+        self._portfolio_status_bullet = ParagraphStyle(
+            "PortfolioStatusBullet",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 7,
+            textColor=colors.black,
+            leftIndent=14,
+            spaceBefore=0,
+            spaceAfter=0,
+            fontName=NOTO_REGULAR,
+        )
+        self._action_box_header = ParagraphStyle(
+            "ActionBoxHeader",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 4,
+            textColor=_hex("white"),
+            fontName=NOTO_BOLD,
+            spaceBefore=0,
+            spaceAfter=0,
+        )
+        self._action_item_title = ParagraphStyle(
+            "ActionItemTitle",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 4,
+            textColor=colors.black,
+            fontName=NOTO_BOLD,
+            spaceBefore=4,
+            spaceAfter=2,
+        )
+        self._action_item_detail = ParagraphStyle(
+            "ActionItemDetail",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 5,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
+            leftIndent=18,
+            spaceBefore=0,
+            spaceAfter=2,
         )
         self._caption = ParagraphStyle(
             "TableCaption",
             parent=styles["BodyText"],
-            fontSize=9,
-            leading=12,
-            spaceBefore=4,
-            spaceAfter=10,
-            textColor=colors.HexColor("#4a5568"),
-            fontName="Helvetica-Oblique",
+            fontSize=t["caption"],
+            leading=t["caption"] + 3,
+            spaceBefore=8,
+            spaceAfter=14,
+            textColor=_hex("slate_light"),
+            fontName=NOTO_ITALIC,
         )
         self._small = ParagraphStyle(
-            "Small", parent=styles["BodyText"], fontSize=9, leading=12
+            "Small",
+            parent=styles["BodyText"],
+            fontSize=t["body"],
+            leading=t["body"] + 3,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
         )
         self._detail_label = ParagraphStyle(
             "DetailLabel",
             parent=self._small,
-            fontSize=8,
-            leading=11,
-            textColor=colors.HexColor("#718096"),
-            fontName="Helvetica-Bold",
-            spaceBefore=8,
-            spaceAfter=4,
+            fontSize=t["table"],
+            leading=t["table"] + 3,
+            textColor=_hex("slate"),
+            fontName=NOTO_BOLD,
+            spaceBefore=10,
+            spaceAfter=6,
         )
         self._cell = ParagraphStyle(
             "Cell",
             parent=styles["BodyText"],
-            fontSize=9,
-            leading=11,
+            fontSize=t["table"],
+            leading=t["table"] + 2,
             wordWrap="CJK",
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
         )
         self._cell_header = ParagraphStyle(
             "CellHeader",
             parent=self._cell,
-            fontName="Helvetica-Bold",
-            fontSize=9,
-            leading=11,
+            fontName=NOTO_BOLD,
+            fontSize=t["table"],
+            leading=t["table"] + 2,
+            textColor=_hex("white"),
+        )
+        self._cell_header_dark = ParagraphStyle(
+            "CellHeaderDark",
+            parent=self._cell,
+            fontName=NOTO_BOLD,
+            fontSize=t["table"],
+            leading=t["table"] + 2,
+            textColor=_hex("navy"),
+        )
+        detail = max(t["table"] - 1, 7)
+        self._cell_detail = ParagraphStyle(
+            "CellDetail",
+            parent=styles["BodyText"],
+            fontSize=detail,
+            leading=detail + 2,
+            wordWrap="CJK",
+            splitLongWords=False,
+            textColor=colors.black,
+            fontName=NOTO_REGULAR,
+        )
+        self._cell_header_detail = ParagraphStyle(
+            "CellHeaderDetail",
+            parent=self._cell_detail,
+            fontName=NOTO_BOLD,
+            textColor=_hex("white"),
         )
         # Legacy aliases
         self._title_style = self._report_title
@@ -536,35 +1067,30 @@ class PDFGenerator:
         doc = SimpleDocTemplate(
             buffer,
             pagesize=letter,
-            topMargin=0.65 * inch,
-            bottomMargin=0.65 * inch,
-            leftMargin=0.75 * inch,
-            rightMargin=0.75 * inch,
+            topMargin=PDF_MARGIN,
+            bottomMargin=PDF_MARGIN,
+            leftMargin=PDF_MARGIN,
+            rightMargin=PDF_MARGIN,
         )
         story: List[Any] = []
         generated = datetime.now().strftime("%B %d, %Y")
-        missing = [d for d in discrepancies if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP]
-        mismatch = [d for d in discrepancies if d.category == DiscrepancyCategory.ATTRIBUTE_MISMATCH]
+        ordered = _sort_discrepancies(discrepancies)
+        missing = [
+            d for d in ordered
+            if d.category == DiscrepancyCategory.MISSING_IN_CMM_VLOGP
+        ]
+        mismatch = [
+            d for d in ordered
+            if d.category == DiscrepancyCategory.ATTRIBUTE_MISMATCH
+        ]
         total_issues = len(discrepancies)
         align_pct = _alignment_pct(summary)
         status = _portfolio_status(summary)
 
         # Cover / title block
-        story.append(Paragraph("Commodity Exposure &amp; Portfolio Drift Analysis", self._report_title))
-        story.append(
-            Paragraph(
-                "Reconciliation Delta &amp; Technical Validation (VBAP vs. CMM_VLOGP)",
-                self._report_subtitle,
-            )
-        )
-        scope_note = summary.scope_filter or "Portfolio scope per analysis run"
-        story.append(
-            Paragraph(
-                f"EOD Close Verification — Generated on {_escape(generated)}<br/>"
-                f"<font size='9' color='#718096'>{_escape(scope_note)}</font>",
-                self._report_date,
-            )
-        )
+        story.append(Spacer(1, 0.08 * inch))
+        story.append(self._cover_block(generated))
+        story.append(Spacer(1, 0.22 * inch))
 
         story.extend(
             self._executive_summary_section(
@@ -575,24 +1101,198 @@ class PDFGenerator:
             self._reconciliation_categories_section(summary, missing, mismatch)
         )
         story.extend(
-            self._executive_risk_analysis_section(missing, mismatch, insights)
+            self._executive_risk_analysis_section(missing, mismatch)
         )
         story.extend(
-            self._executive_mitigation_section(summary, insights, discrepancies)
+            self._executive_mitigation_section(discrepancies)
         )
 
         doc.build(story, onFirstPage=_pdf_page_footer, onLaterPages=_pdf_page_footer)
         buffer.seek(0)
         return buffer.getvalue()
 
-    def _section(self, number: int, title: str) -> Paragraph:
-        return Paragraph(f"{number} {_escape(title)}", self._section_heading)
+    def _section(self, number: int, title: str, *, first: bool = False) -> List[Any]:
+        """Section heading with navy underline (sample PDF style)."""
+        style = ParagraphStyle(
+            "SectionHeadingRun",
+            parent=self._section_heading,
+            spaceBefore=0 if first else self._section_heading.spaceBefore,
+        )
+        return [
+            Paragraph(f"{number} {_escape(title)}", style),
+            HRFlowable(
+                width="100%",
+                thickness=0.75,
+                color=_hex("navy"),
+                spaceBefore=0,
+                spaceAfter=6,
+            ),
+        ]
 
-    def _subsection(self, number: str, title: str) -> Paragraph:
+    def _subsection(self, number: str, title: str, *, accent: str = "navy") -> Paragraph:
+        """Subsection heading — plain bold left-aligned."""
         return Paragraph(f"{number} {_escape(title)}", self._subsection_heading)
 
+    def _cover_block(self, generated: str) -> Table:
+        """Centered report header — title, subtitle, EOD verification date."""
+        lines = [
+            Paragraph("Commodity Exposure &amp; Portfolio Drift Analysis", self._report_title),
+            Paragraph(
+                "Reconciliation Delta &amp; Technical Validation (VBAP vs. CMM_VLOGP)",
+                self._report_subtitle,
+            ),
+            Paragraph(
+                f"EOD Close Verification — Generated on {_escape(generated)}",
+                self._report_date,
+            ),
+        ]
+        header = Table([[line] for line in lines], colWidths=[CONTENT_WIDTH])
+        header.setStyle(
+            TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ])
+        )
+        return header
+
+    def _portfolio_status_box(
+        self,
+        status: str,
+        metrics: List[tuple[str, str]],
+    ) -> Table:
+        """
+        Portfolio status callout — status-colored header bar + dash-bulleted metrics body.
+        Each metric is (label, value); label renders bold before the colon.
+        """
+        bar_color = _portfolio_status_bar_color(status)
+        header = Paragraph(
+            _portfolio_status_label(status),
+            self._portfolio_status_header,
+        )
+        bullet_html = "<br/>".join(
+            f"– <b>{_escape(label)}:</b> {_escape(value)}" for label, value in metrics
+        )
+        body = Paragraph(bullet_html, self._portfolio_status_bullet)
+
+        panel = Table(
+            [[header], [body]],
+            colWidths=[CONTENT_WIDTH],
+        )
+        panel.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), bar_color),
+                ("BACKGROUND", (0, 1), (-1, 1), _hex("white")),
+                ("BOX", (0, 0), (-1, -1), 1, bar_color),
+                ("LEFTPADDING", (0, 0), (-1, 0), 14),
+                ("RIGHTPADDING", (0, 0), (-1, 0), 14),
+                ("TOPPADDING", (0, 0), (-1, 0), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                ("LEFTPADDING", (0, 1), (-1, 1), 14),
+                ("RIGHTPADDING", (0, 1), (-1, 1), 14),
+                ("TOPPADDING", (0, 1), (-1, 1), 12),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 12),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ])
+        )
+        wrapper = Table([[panel]], colWidths=[CONTENT_WIDTH])
+        wrapper.setStyle(
+            TableStyle([
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ])
+        )
+        return wrapper
+
+    def _operational_risk_action_box(
+        self,
+        items: List[OperationalActionItem],
+    ) -> List[Any]:
+        """
+        Orange-bordered callout for Section 4 action items (mockup design).
+        Returns splittable flowables so long step lists can span pages.
+        """
+        header = Paragraph(
+            "<b>Operational Risk Action Items</b>",
+            self._action_box_header,
+        )
+        rows: List[List[Any]] = [[header]]
+
+        if not items:
+            rows.append([
+                Paragraph(
+                    "No discrepancies were identified — no remediation steps required for this run.",
+                    self._action_item_detail,
+                )
+            ])
+        else:
+            for idx, item in enumerate(items, start=1):
+                title_style = self._action_item_title
+                if idx > 1:
+                    title_style = ParagraphStyle(
+                        "ActionItemTitleGap",
+                        parent=self._action_item_title,
+                        spaceBefore=12,
+                    )
+                rows.append([
+                    Paragraph(
+                        f"{idx}. <b>{_escape(item.owner_label)}</b>",
+                        title_style,
+                    )
+                ])
+                rows.append([
+                    Paragraph(
+                        f"<i>Issue:</i> {_escape(item.issue)}",
+                        self._action_item_detail,
+                    )
+                ])
+                step_lines = "<br/>".join(
+                    f"&nbsp;&nbsp;{step_no}. {_escape(step)}"
+                    for step_no, step in enumerate(item.steps, start=1)
+                )
+                rows.append([
+                    Paragraph(
+                        f"<i>Steps to resolve:</i><br/>{step_lines}",
+                        self._action_item_detail,
+                    )
+                ])
+                rows.append([
+                    Paragraph(
+                        f"<i>Affected orders:</i> {_escape(item.affected)}",
+                        self._action_item_detail,
+                    )
+                ])
+                rows.append([
+                    Paragraph(
+                        f"<i>Target:</i> {_escape(item.target)}",
+                        self._action_item_detail,
+                    )
+                ])
+
+        panel = Table(rows, colWidths=[CONTENT_WIDTH], repeatRows=1)
+        panel.splitByRow = 1
+        orange = _hex("action_orange")
+        panel.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), orange),
+                ("BACKGROUND", (0, 1), (-1, -1), _hex("surface")),
+                ("BOX", (0, 0), (-1, -1), 1, orange),
+                ("ROUNDEDCORNERS", [6, 6, 6, 6]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+                ("TOPPADDING", (0, 0), (0, 0), 12),
+                ("BOTTOMPADDING", (0, 0), (0, 0), 12),
+                ("TOPPADDING", (0, 1), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, -1), (-1, -1), 14),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ])
+        )
+        return [panel, Spacer(1, 0.1 * inch)]
+
     def _summary_box(self, flowables: List[Any]) -> Table:
-        """Bordered callout for executive summary metrics."""
+        """Generic bordered callout (legacy helper)."""
         if not flowables:
             return Table([[Spacer(1, 0.01 * inch)]], colWidths=[CONTENT_WIDTH])
 
@@ -600,16 +1300,23 @@ class PDFGenerator:
         table = Table(rows, colWidths=[CONTENT_WIDTH])
         table.setStyle(
             TableStyle([
-                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#cbd5e0")),
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7fafc")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("BOX", (0, 0), (-1, -1), 0.75, _hex("border")),
+                ("LINEBEFORE", (0, 0), (0, -1), 4, _hex("navy_light")),
+                ("BACKGROUND", (0, 0), (-1, -1), _hex("surface")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ])
         )
-        return table
+        wrapper = Table([[table]], colWidths=[CONTENT_WIDTH])
+        wrapper.setStyle(
+            TableStyle([
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ])
+        )
+        return wrapper
 
     def _executive_summary_section(
         self,
@@ -621,52 +1328,38 @@ class PDFGenerator:
         align_pct: float,
         status: str,
     ) -> List[Any]:
-        blocks: List[Any] = [self._section(1, "Executive Summary")]
-
+        blocks: List[Any] = []
+        blocks.extend(self._section(1, "Executive Summary", first=True))
         blocks.append(Paragraph(_escape(EXECUTIVE_SUMMARY_LEAD), self._body))
 
-        box_flowables: List[Any] = []
         intro = narrative.get("executive_summary") or summary.executive_summary
         if intro and str(intro).strip() and str(intro).strip() != EXECUTIVE_SUMMARY_LEAD:
-            box_flowables.append(Paragraph(_escape(str(intro)), self._body))
+            blocks.append(Paragraph(_escape(str(intro)), self._body))
 
-        status_color = {
-            "GREEN": "#276749",
-            "AMBER": "#c05621",
-            "RED": "#c53030",
-        }.get(status, "#2d3748")
-        box_flowables.append(
-            Paragraph(
-                f"<b>Portfolio Status:</b> "
-                f"<font color='{status_color}'><b>{status}</b></font>",
-                self._body,
-            )
-        )
-
-        mismatch_lines = summary.mismatch_detail_count or summary.mismatch_count
-        bullets = [
-            f"Total Booked Contracts Analyzed: {summary.total_commodity_relevant} Active Sales Orders",
-            f"Total Discrepancies Located: {total_issues} Discrepancy Deltas",
+        metrics: List[tuple[str, str]] = [
             (
-                f"Unbooked Exposure Gap (Missing Records): {summary.missing_count} Contracts "
-                "(Risk Management Blindspot)"
+                "Total Booked Contracts Analyzed",
+                f"{summary.total_commodity_relevant} Active Sales Orders",
             ),
             (
-                f"Active Portfolio Drift (Attribute Mismatches): {mismatch_lines} Rows "
-                "(Physical / Attribute Tracking Drift)"
+                "Total Discrepancies Located",
+                f"{total_issues} Discrepancy Deltas",
             ),
             (
-                f"Overall Ledger Integrity Index: {align_pct:.2f}% Alignment "
-                "(Critical limit is 99.00%)"
+                "Unbooked Exposure Gap (Missing Records)",
+                f"{summary.missing_count} Contracts (Risk Management Blindspot)",
+            ),
+            (
+                "Active Portfolio Drift (Attribute Mismatches)",
+                f"{summary.mismatch_count} Contracts (Physical Location Tracking Drift)",
+            ),
+            (
+                "Overall Ledger Integrity Index",
+                f"{align_pct:.2f}% Alignment (Critical limit is 99.00%)",
             ),
         ]
-        numbered = "<br/>".join(
-            f"{idx}. {_escape(item)}" for idx, item in enumerate(bullets, start=1)
-        )
-        box_flowables.append(Paragraph(numbered, self._exec_numbered_list))
-
-        blocks.append(self._summary_box(box_flowables))
-
+        blocks.append(self._portfolio_status_box(status, metrics))
+        blocks.append(Spacer(1, 0.14 * inch))
         if missing:
             blocks.append(
                 Paragraph(
@@ -706,8 +1399,9 @@ class PDFGenerator:
         missing: List[DiscrepancyRecord],
         mismatch: List[DiscrepancyRecord],
     ) -> List[Any]:
-        blocks: List[Any] = [
-            self._section(2, "Portfolio Reconciliation Detail"),
+        blocks: List[Any] = []
+        blocks.extend(self._section(2, "Portfolio Reconciliation Detail"))
+        blocks.append(
             Paragraph(
                 _escape(
                     f"Of {summary.total_commodity_relevant} commodity-relevant VBAP row(s) in scope, "
@@ -716,13 +1410,16 @@ class PDFGenerator:
                     "Every affected order line is listed below."
                 ),
                 self._body,
-            ),
-            Spacer(1, 0.1 * inch),
+            )
+        )
+        blocks.append(Spacer(1, 0.1 * inch))
+        blocks.append(
             self._subsection(
                 "2.1",
                 "Missing Sales Document (VBAP) in Risk Position Ledger (CMM_VLOGP)",
-            ),
-        ]
+                accent="cat1_accent",
+            )
+        )
 
         if not missing:
             blocks.append(
@@ -749,7 +1446,9 @@ class PDFGenerator:
             )
 
         blocks.append(Spacer(1, 0.12 * inch))
-        blocks.append(self._subsection("2.2", "Category 2 — Attribute Mismatch"))
+        blocks.append(
+            self._subsection("2.2", "Category 2 — Attribute Mismatch", accent="cat2_accent")
+        )
 
         if not mismatch:
             blocks.append(
@@ -765,13 +1464,14 @@ class PDFGenerator:
                     self._small,
                 )
             )
+            cat2_detail_rows = _build_category2_table_rows(mismatch)
             cat2_rows: List[List[str]] = [CATEGORY2_DETAIL_HEADERS]
-            cat2_rows.extend(_build_category2_table_rows(mismatch))
-            blocks.append(self._para_table(cat2_rows, CATEGORY2_DETAIL_WIDTHS))
+            cat2_rows.extend(cat2_detail_rows)
+            blocks.append(self._category2_detail_table(cat2_rows))
             blocks.append(
                 Paragraph(
                     _record_count_footer(
-                        len(_build_category2_table_rows(mismatch)),
+                        len(cat2_detail_rows),
                         summary.mismatch_detail_count or summary.mismatch_count,
                         "mismatch detail rows",
                     ),
@@ -782,48 +1482,35 @@ class PDFGenerator:
         blocks.append(Spacer(1, 0.08 * inch))
         return blocks
 
+    def _labeled_dash_bullet(self, label: str, text: str) -> Paragraph:
+        """Section 3 style — dash bullet with bold label prefix."""
+        return Paragraph(
+            f"– <b>{_escape(label)}:</b> {_escape(text)}",
+            self._bullet,
+        )
+
     def _executive_risk_analysis_section(
         self,
         missing: List[DiscrepancyRecord],
         mismatch: List[DiscrepancyRecord],
-        insights: List[AgentInsight],
     ) -> List[Any]:
-        blocks: List[Any] = [self._section(3, "Portfolio Drift & Risk Vector Analysis")]
+        blocks: List[Any] = []
+        blocks.extend(self._section(3, "Portfolio Drift & Risk Vector Analysis"))
 
         if missing:
             blocks.append(self._subsection("3.1", "Systemic Interface Calculation Lags"))
             blocks.append(
                 Paragraph(
                     _escape(
-                        "Missing ledger entries often trace to stalled commodity interface queues "
-                        "during valuation or document creation. Representative diagnostics:"
+                        "Multiple active orders are failing to synchronize with the Risk "
+                        "Position Ledger. Transaction-level blocks in qRFC queues prevent "
+                        "risk booking:"
                     ),
                     self._body,
                 )
             )
-            shown = 0
-            for d in missing:
-                research = d.qrf_research or {}
-                for entry in research.get("queue_matches") or []:
-                    if shown >= 6:
-                        break
-                    qname = entry.get("queue_name") or "Unknown queue"
-                    std = entry.get("standard_system_text") or entry.get("message") or ""
-                    line = (
-                        f"Order {d.vbeln}/{d.posnr}: {_clean_context(std or qname)} "
-                        f"({qname})."
-                    )
-                    blocks.append(Paragraph(f"– {_escape(line)}", self._bullet))
-                    shown += 1
-                if shown >= 6:
-                    break
-            if shown == 0:
-                blocks.append(
-                    Paragraph(
-                        "– No qRFC queue footprint was found; manual reconciliation is advised.",
-                        self._bullet,
-                    )
-                )
+            for label, text in _build_section3_missing_bullets(missing):
+                blocks.append(self._labeled_dash_bullet(label, text))
 
         lgort_mismatch = [
             d for d in mismatch
@@ -831,30 +1518,28 @@ class PDFGenerator:
         ]
         if lgort_mismatch:
             blocks.append(self._subsection("3.2", "Inventory Location Drift (LGORT Mismatches)"))
-            sample_orders = ", ".join(
-                f"{d.vbeln}/{d.posnr}" for d in lgort_mismatch[:8]
-            )
+            order_sample = ", ".join(d.vbeln for d in lgort_mismatch[:3])
             blocks.append(
                 Paragraph(
                     _escape(
-                        f"For order lines including {sample_orders}, change-history and "
-                        "attribute comparison indicate storage location drift (e.g. INTR vs FINV)."
+                        f"Orders {order_sample} are physically remapped from "
+                        '"In-Transit" (INTR) to "Final Inventory" (FINV).'
                     ),
                     self._body,
                 )
             )
             blocks.append(
-                Paragraph(
-                    "– <b>Impact on risk limits:</b> Risk software may apply transit factors "
-                    "where facility storage factors are appropriate, distorting regional allocations.",
-                    self._bullet,
+                self._labeled_dash_bullet(
+                    "Impact on risk limits",
+                    "Risk software applies transit factors where facility storage factors "
+                    "are appropriate, distorting regional allocations.",
                 )
             )
             blocks.append(
-                Paragraph(
-                    "– <b>Operational impact:</b> Custody and jurisdictional profiles may "
-                    "register under incorrect storage categories until synchronized.",
-                    self._bullet,
+                self._labeled_dash_bullet(
+                    "Operational impact",
+                    "Custody and jurisdictional profiles may register under incorrect "
+                    "storage categories until synchronized.",
                 )
             )
         elif mismatch:
@@ -879,53 +1564,26 @@ class PDFGenerator:
 
     def _executive_mitigation_section(
         self,
-        summary: AnalysisSummary,
-        insights: List[AgentInsight],
         discrepancies: List[DiscrepancyRecord],
     ) -> List[Any]:
-        blocks: List[Any] = [
-            self._section(4, "Immediate Action & Risk Mitigation Plan"),
-            Paragraph("<b>Operational Risk Action Items</b>", self._body),
-        ]
+        blocks: List[Any] = []
+        blocks.extend(self._section(4, "Immediate Action & Risk Mitigation Plan"))
+        blocks.append(
+            Paragraph(
+                _escape(
+                    "Each item below assigns a responsible team, describes the exposure, "
+                    "lists concrete remediation steps derived from this run's diagnostics, "
+                    "and states the completion target. Content is rule-based and identical "
+                    "for the same reconciliation data. Cross-reference Section 2 for "
+                    "order-level detail."
+                ),
+                self._body,
+            )
+        )
+        action_items = _build_operational_action_items(discrepancies)
+        blocks.extend(self._operational_risk_action_box(action_items))
 
-        groups = _group_recommended_actions(insights, discrepancies)
-        if not groups and summary.recommended_actions:
-            for idx, action in enumerate(summary.recommended_actions, start=1):
-                owner = _format_owner_label(action.get("recommended_owner", "TBD"))
-                blocks.append(
-                    Paragraph(
-                        f"{idx}. <b>{_escape(owner)}</b>",
-                        self._body,
-                    )
-                )
-                blocks.append(
-                    Paragraph(
-                        f"<b>Action Required:</b> {_escape(action.get('action', ''))}",
-                        self._bullet,
-                    )
-                )
-        else:
-            for idx, (action, owner, orders) in enumerate(groups, start=1):
-                label = _format_owner_label(owner)
-                blocks.append(
-                    Paragraph(f"{idx}. <b>{_escape(label)}</b>", self._body)
-                )
-                blocks.append(
-                    Paragraph(
-                        f"<b>Action Required:</b> {_escape(action)}",
-                        self._bullet,
-                    )
-                )
-                target = (
-                    f"Resolve {len(orders)} affected order line(s) "
-                    "and restore ledger integrity before the next trading session."
-                )
-                blocks.append(
-                    Paragraph(f"<b>Target:</b> {_escape(target)}", self._bullet)
-                )
-                blocks.append(Spacer(1, 0.04 * inch))
-
-        blocks.append(Spacer(1, 0.12 * inch))
+        blocks.append(Spacer(1, 0.04 * inch))
         blocks.append(
             Paragraph(
                 "<i>For inquiries or to report remediation milestones, contact the "
@@ -1018,6 +1676,52 @@ class PDFGenerator:
 
         return blocks
 
+    def _category2_cell_paragraph(self, col_idx: int, value: str, *, header: bool) -> Paragraph:
+        """Format a Category 2 cell — compact attribute labels, no-wrap for IDs."""
+        style = self._cell_header_detail if header else self._cell_detail
+        text = str(value or "")
+        if not header:
+            if col_idx == 3:
+                text = _compact_mismatch_attr(text)
+            elif col_idx in CATEGORY2_NOWRAP_COLS and text and text != "—":
+                return Paragraph(f"<nobr>{_escape(text)}</nobr>", style)
+        elif col_idx in CATEGORY2_NOWRAP_COLS:
+            return Paragraph(f"<nobr>{_escape(text)}</nobr>", style)
+        return Paragraph(_escape(text), style)
+
+    def _category2_detail_table(self, data: List[List[str]]) -> Table:
+        """Section 2.2 table — compact 7pt layout with controlled column widths."""
+        wrapped: List[List[Any]] = []
+        for row_idx, row in enumerate(data):
+            header = row_idx == 0
+            wrapped.append([
+                self._category2_cell_paragraph(col_idx, cell, header=header)
+                for col_idx, cell in enumerate(row)
+            ])
+
+        table = Table(wrapped, colWidths=CATEGORY2_DETAIL_WIDTHS, repeatRows=1)
+        table.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), _hex("navy")),
+                ("BACKGROUND", (0, 1), (-1, -1), _hex("white")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), _hex("white")),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.75, _hex("navy_light")),
+                ("GRID", (0, 0), (-1, -1), 0.3, _hex("border_light")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (0, -1), 2),
+                ("RIGHTPADDING", (0, 0), (0, -1), 2),
+                ("LEFTPADDING", (1, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (1, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                ("TOPPADDING", (0, 1), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
+                ("FONTNAME", (0, 0), (-1, 0), NOTO_BOLD),
+            ])
+        )
+        return table
+
     def _para_table(
         self,
         data: List[List[str]],
@@ -1029,7 +1733,7 @@ class PDFGenerator:
         if layout == "field_value":
             for row in data:
                 wrapped.append([
-                    Paragraph(_escape(str(row[0])), self._cell_header),
+                    Paragraph(_escape(str(row[0])), self._cell_header_dark),
                     Paragraph(_escape(str(row[1]) if len(row) > 1 else ""), self._cell),
                 ])
             repeat_rows = 0
@@ -1042,26 +1746,31 @@ class PDFGenerator:
         table = Table(wrapped, colWidths=col_widths, repeatRows=repeat_rows)
         if layout == "field_value":
             style_commands = [
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("GRID", (0, 0), (-1, -1), 0.3, _hex("border_light")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 6),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf2f7")),
-                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("FONTNAME", (0, 0), (0, -1), NOTO_BOLD),
+                ("BACKGROUND", (0, 0), (0, -1), _hex("surface_alt")),
+                ("BACKGROUND", (1, 0), (-1, -1), _hex("white")),
             ]
         else:
             style_commands = [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#edf2f7")),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), _hex("navy")),
+                ("BACKGROUND", (0, 1), (-1, -1), _hex("white")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), _hex("white")),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.75, _hex("navy_light")),
+                ("GRID", (0, 0), (-1, -1), 0.3, _hex("border_light")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, 0), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
+                ("TOPPADDING", (0, 1), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+                ("FONTNAME", (0, 0), (-1, 0), NOTO_BOLD),
             ]
         table.setStyle(TableStyle(style_commands))
         return table

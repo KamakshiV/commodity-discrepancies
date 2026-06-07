@@ -245,7 +245,9 @@ class AgentOrchestrator:
                 "Never override rule-engine findings. Respond with valid JSON only.",
                 (
                     "Classify each discrepancy. Return a JSON array with objects containing: "
-                    "vbeln, posnr, classification, likely_cause, evidence (array), recommended_action.\n"
+                    "vbeln, posnr, classification, likely_cause, evidence (array), "
+                    "recommended_action, recommended_owner "
+                    "(must be one of: SAP Basis, SAP Commodity Team, Functional Analyst).\n"
                     f"Data:\n{context}"
                 ),
                 "Discrepancy Classifier",
@@ -259,7 +261,8 @@ class AgentOrchestrator:
                     "You are a SAP qRFC investigator for missing CMM_VLOGP records. JSON only.",
                     (
                         "Analyze qRFC evidence for missing records. Return JSON array with: "
-                        "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner.\n"
+                        "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner "
+                        "(SAP Basis, SAP Commodity Team, or Functional Analyst).\n"
                         f"Records:\n{_missing_context(missing)}"
                     ),
                     "qRFC Investigator",
@@ -275,7 +278,8 @@ class AgentOrchestrator:
                     "You are a SAP change-document investigator for attribute mismatches. JSON only.",
                     (
                         "Analyze CDHDR/CDPOS change history. Return JSON array with: "
-                        "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner.\n"
+                        "vbeln, posnr, likely_cause, evidence, recommended_action, recommended_owner "
+                        "(SAP Basis, SAP Commodity Team, or Functional Analyst).\n"
                         f"Records:\n{_mismatch_context(mismatch)}"
                     ),
                     "Change History Investigator",
@@ -697,5 +701,29 @@ class AgentOrchestrator:
         summary: AnalysisSummary,
         discrepancies: List[DiscrepancyRecord],
     ) -> Dict[str, str]:
-        """Fast PDF narrative from analysis summary — no extra OpenAI round trip."""
+        """Template PDF narrative when AI agents were not used for this run."""
         return self._fallback_narrative(summary, discrepancies)
+
+    def build_pdf_narrative_from_analysis(
+        self,
+        summary: AnalysisSummary,
+        discrepancies: List[DiscrepancyRecord],
+        insights: List[AgentInsight],
+        *,
+        ai_analysis_used: bool,
+    ) -> Dict[str, str]:
+        """
+        Build PDF narrative without an extra OpenAI call.
+
+        Reuses Business Analyst summary fields and agent insights from the analysis
+        stage so PDF generation stays fast (ReportLab only on the hot path).
+        """
+        narrative = self._fallback_narrative(summary, discrepancies)
+        if not ai_analysis_used:
+            return narrative
+
+        if summary.executive_summary:
+            narrative["executive_summary"] = summary.executive_summary
+        if summary.root_cause_summary:
+            narrative["why_it_matters"] = summary.root_cause_summary
+        return narrative

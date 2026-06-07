@@ -305,7 +305,14 @@ class RuleEngine:
                     )
                 )
 
-        return results
+        return sorted(
+            results,
+            key=lambda d: (
+                d.vbeln or "",
+                d.posnr or "",
+                d.category.value,
+            ),
+        )
 
     def _compare_attributes(self, vbap_row: pd.Series, cmm_row: pd.Series) -> list[str]:
         mismatched: list[str] = []

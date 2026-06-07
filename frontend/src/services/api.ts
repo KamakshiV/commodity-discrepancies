@@ -144,19 +144,51 @@ export function pdfDownloadUrl(): string {
   return `${API}/report/pdf`;
 }
 
-/** Fetch PDF bytes and trigger browser download. */
-export async function downloadPdfReport(filename?: string): Promise<void> {
-  const res = await fetch(`${API}/report/pdf`);
-  if (!res.ok) {
-    throw new Error(await parseErrorDetail(res, "PDF download failed"));
+function isSameOriginDownload(url: string): boolean {
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
   }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || `commodity_discrepancy_report_${new Date().toISOString().slice(0, 10)}.pdf`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+}
+
+function triggerIframeDownload(url: string): void {
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.title = "PDF download";
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  window.setTimeout(() => {
+    iframe.remove();
+  }, 60_000);
+}
+
+/**
+ * Trigger a PDF download from the backend attachment endpoint.
+ *
+ * Uses a hidden iframe when the API is cross-origin or after a long async analysis,
+ * because browsers block programmatic <a> clicks without a user gesture (and may
+ * navigate away from the SPA on cross-origin links).
+ */
+export function downloadPdfReport(
+  filename?: string,
+  options?: { afterAsync?: boolean }
+): void {
+  const url = `${pdfDownloadUrl()}?t=${Date.now()}`;
+
+  if (options?.afterAsync || !isSameOriginDownload(url)) {
+    triggerIframeDownload(url);
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download =
+    filename ?? `commodity_discrepancy_report_${new Date().toISOString().slice(0, 10)}.pdf`;
+  link.style.display = "none";
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }

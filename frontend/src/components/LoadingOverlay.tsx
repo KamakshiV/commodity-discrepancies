@@ -6,7 +6,7 @@ const PHASES = [
   "Loading SAP table data…",
   "Matching VBAP ↔ CMM_VLOGP…",
   "Running qRFC & change research…",
-  "Running AI agents (often the longest step)…",
+  "Running AI agents…",
   "Building PDF report…",
 ];
 

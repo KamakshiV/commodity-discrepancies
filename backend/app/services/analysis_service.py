@@ -199,10 +199,17 @@ class AnalysisService:
             log_info("pdf", "Returning cached PDF report")
             return _pdf_cache
 
-        narrative = self.orchestrator.build_pdf_narrative(
+        narrative = self.orchestrator.build_pdf_narrative_from_analysis(
             _last_result.summary,
             _last_result.discrepancies,
+            _last_result.insights,
+            ai_analysis_used=_last_result.ai_analysis_used,
         )
+        if _last_result.ai_analysis_used:
+            log_info(
+                "pdf",
+                "Using analysis-stage AI narrative (no additional OpenAI call for PDF)",
+            )
 
         with StageTimer("pdf", "Building PDF document", "PDF document built"):
             _pdf_cache = self.pdf_gen.build(
